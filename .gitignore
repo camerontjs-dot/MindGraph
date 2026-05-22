@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local databases and build artifacts
+*.sqlite
+*.sqlite-journal
+*.db
+build/
+
+# OS
+.DS_Store
+
+# Internal-only project files (kept locally for ongoing work, not published)
+AGENTS.md
+CHANGELOG.md
+planning/
