@@ -3,6 +3,8 @@ name = "mindgraph"
 version = "0.1.0"
 description = "A Graph-Augmented Personal Knowledge Engine"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "typer>=0.12.0",
