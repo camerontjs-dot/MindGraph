@@ -181,6 +181,14 @@ def insert_edges(conn: sqlite3.Connection, edges: Iterable[GraphEdge]) -> None:
         )
 
 
+def replace_edges(
+    conn: sqlite3.Connection, source_id: str, edges: Iterable[GraphEdge]
+) -> None:
+    """Replace all outbound edges for one source document."""
+    conn.execute("DELETE FROM edges WHERE source_id = ?", (source_id,))
+    insert_edges(conn, edges)
+
+
 if __name__ == "__main__":
     init_db()
     print("Database schema initialized successfully.")

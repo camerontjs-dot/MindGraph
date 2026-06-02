@@ -2,6 +2,7 @@ import pytest
 
 from mindgraph.exceptions import ParseError
 from mindgraph.parser import (
+    LinkResolver,
     chunk_truth,
     compute_doc_id,
     extract_graph_edges,
@@ -86,6 +87,36 @@ class TestSplitPageModel:
 
 
 class TestExtractGraphEdges:
+    @pytest.fixture
+    def link_resolver(self):
+        docs = [
+            parse_document(
+                "agents/source.md",
+                b"---\ntitle: Source\n---\nBody",
+            ),
+            parse_document(
+                "agents/foo.md",
+                b"---\ntitle: Agent Foo\n---\nBody",
+            ),
+            parse_document(
+                "ai-business/cross-domain.md",
+                b"---\ntitle: Cross Domain Note\n---\nBody",
+            ),
+            parse_document(
+                "knowledge-systems/title-target.md",
+                b"---\ntitle: Display Title\n---\nBody",
+            ),
+            parse_document(
+                "finance/duplicate.md",
+                b"---\ntitle: Shared Title\n---\nBody",
+            ),
+            parse_document(
+                "agents/duplicate.md",
+                b"---\ntitle: Shared Title\n---\nBody",
+            ),
+        ]
+        return LinkResolver.from_documents(docs)
+
     def test_plain_link(self):
         edges = extract_graph_edges("see [[people/alice]]", source_id="src")
         assert len(edges) == 1
@@ -118,6 +149,72 @@ class TestExtractGraphEdges:
     def test_link_already_has_md_extension(self):
         edges = extract_graph_edges("[[notes/foo.md]]", source_id="src")
         assert edges[0].target_id == compute_doc_id("notes/foo.md")
+
+    def test_resolves_explicit_path_target(self, link_resolver):
+        edges = extract_graph_edges(
+            "[[agents/foo]] and [[agents/foo.md]]",
+            source_id="src",
+            link_resolver=link_resolver,
+            source_path="agents/source.md",
+        )
+
+        assert [e.target_id for e in edges] == [
+            compute_doc_id("agents/foo.md"),
+            compute_doc_id("agents/foo.md"),
+        ]
+
+    def test_resolves_same_directory_bare_target_first(self, link_resolver):
+        edges = extract_graph_edges(
+            "[[foo]]",
+            source_id="src",
+            link_resolver=link_resolver,
+            source_path="agents/source.md",
+        )
+
+        assert edges[0].target_id == compute_doc_id("agents/foo.md")
+
+    def test_resolves_unique_cross_domain_stem(self, link_resolver):
+        edges = extract_graph_edges(
+            "[[cross-domain]]",
+            source_id="src",
+            link_resolver=link_resolver,
+            source_path="agents/source.md",
+        )
+
+        assert edges[0].target_id == compute_doc_id("ai-business/cross-domain.md")
+
+    def test_resolves_unique_title(self, link_resolver):
+        edges = extract_graph_edges(
+            "[[Display Title]]",
+            source_id="src",
+            link_resolver=link_resolver,
+            source_path="agents/source.md",
+        )
+
+        assert edges[0].target_id == compute_doc_id("knowledge-systems/title-target.md")
+
+    def test_ambiguous_target_remains_dangling(self, link_resolver):
+        edges = extract_graph_edges(
+            "[[duplicate]] and [[Shared Title]]",
+            source_id="src",
+            link_resolver=link_resolver,
+            source_path="knowledge-systems/source.md",
+        )
+
+        assert [e.target_id for e in edges] == [
+            compute_doc_id("duplicate.md"),
+            compute_doc_id("Shared Title.md"),
+        ]
+
+    def test_missing_target_remains_dangling(self, link_resolver):
+        edges = extract_graph_edges(
+            "[[missing]]",
+            source_id="src",
+            link_resolver=link_resolver,
+            source_path="agents/source.md",
+        )
+
+        assert edges[0].target_id == compute_doc_id("missing.md")
 
 
 class TestChunkTruth:

@@ -1,5 +1,7 @@
 import hashlib
 import re
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -34,6 +36,56 @@ def _normalize_link_target(target: str) -> str:
     return target
 
 
+def _normalize_lookup_key(value: str) -> str:
+    return value.strip().casefold()
+
+
+@dataclass
+class LinkResolver:
+    """Resolve wikilink labels against documents in one ingest scope."""
+
+    paths: set[str] = field(default_factory=set)
+    stems: dict[str, set[str]] = field(default_factory=dict)
+    titles: dict[str, set[str]] = field(default_factory=dict)
+
+    @classmethod
+    def from_documents(cls, documents: Iterable[ParsedDocument]) -> "LinkResolver":
+        resolver = cls()
+        for doc in documents:
+            resolver.add_document(doc)
+        return resolver
+
+    def add_document(self, doc: ParsedDocument) -> None:
+        self.paths.add(doc.path)
+        self.stems.setdefault(_normalize_lookup_key(Path(doc.path).stem), set()).add(
+            doc.path
+        )
+        self.titles.setdefault(_normalize_lookup_key(doc.title), set()).add(doc.path)
+
+    def resolve(self, target: str, source_path: str | None = None) -> str | None:
+        normalized = _normalize_link_target(target)
+        if normalized in self.paths:
+            return normalized
+
+        if source_path is not None and "/" not in normalized:
+            sibling = str(Path(source_path).parent / normalized)
+            if sibling in self.paths:
+                return sibling
+
+        if "/" not in normalized:
+            stem_key = _normalize_lookup_key(Path(normalized).stem)
+            stem_matches = self.stems.get(stem_key, set())
+            if len(stem_matches) == 1:
+                return next(iter(stem_matches))
+
+        raw_key = _normalize_lookup_key(target)
+        title_matches = self.titles.get(raw_key, set())
+        if len(title_matches) == 1:
+            return next(iter(title_matches))
+
+        return None
+
+
 def parse_frontmatter(text: str) -> tuple[dict, str]:
     """Extract YAML frontmatter if present. Returns (metadata, body)."""
     match = FRONTMATTER_PATTERN.match(text)
@@ -65,12 +117,23 @@ def split_page_model(body: str) -> tuple[str, str | None]:
     return truth, (timeline or None)
 
 
-def extract_graph_edges(text: str, source_id: str) -> list[GraphEdge]:
+def extract_graph_edges(
+    text: str,
+    source_id: str,
+    *,
+    link_resolver: Callable[[str, str | None], str | None] | LinkResolver | None = None,
+    source_path: str | None = None,
+) -> list[GraphEdge]:
     """Find `[[link]]` and `[[link]] (relationship)` patterns and return edges."""
     edges: list[GraphEdge] = []
     for match in LINK_PATTERN.finditer(text):
         target_raw, relationship = match.groups()
-        target_id = compute_doc_id(_normalize_link_target(target_raw))
+        resolved_path = None
+        if isinstance(link_resolver, LinkResolver):
+            resolved_path = link_resolver.resolve(target_raw, source_path)
+        elif link_resolver is not None:
+            resolved_path = link_resolver(target_raw, source_path)
+        target_id = compute_doc_id(resolved_path or _normalize_link_target(target_raw))
         edges.append(
             GraphEdge(
                 source_id=source_id,

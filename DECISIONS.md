@@ -499,3 +499,21 @@ The full pytest suite, previously 88 passing tests after Phase 4, must stay gree
 - Load the embedder lazily on the first `query` tool call. Rejected because stdio clients expect tool calls to return promptly after the server is listed. Eager load moves the known model cost to startup and logs it where the user can see it.
 - Accept a `db_path` parameter on each tool call. Rejected because it creates multi-DB routing and error handling that the current phase does not need.
 - Convert all tool errors into successful JSON payloads with an `error` key. Rejected because MCP already has a tool-error channel and clients know how to surface it.
+
+## 2026-05-31 — Scope-aware wikilink edge resolution
+
+**Decision:** Ingest resolves `[[link]]` edge targets against the full Markdown scope before computing `target_id`. Resolution order is exact scope-relative path, same-directory bare filename, globally unique stem, then globally unique document title. If no candidate is found, or if the global stem/title candidate is ambiguous, MindGraph preserves the existing dangling-edge behavior by hashing the normalized raw target.
+
+**Rationale:** Document IDs are hashes of scope-relative paths. Bare wikilinks from MainFrame notes usually name a file stem, not the full domain path, so hashing the raw label produced target IDs that did not match stored document IDs. Scope-aware resolution keeps existing document identity stable while making graph edges useful for domain-scoped vaults.
+
+**Compatibility:** `extract_graph_edges` keeps its previous behavior when no resolver is provided. CLI ingest is the only path that builds the scope resolver. Dangling edges remain first-class query results in `neighbors`, and graph expansion still stops at unresolved targets.
+
+**Re-ingest behavior:** Unchanged documents skip chunking and embedding, but their outbound edges are replaced during ingest. This lets an existing database repair graph edges after resolver improvements or after a newly added target document appears.
+
+**Rejected alternatives:**
+
+- Require source Markdown to use full paths in every wikilink. Rejected because it would mutate user vault conventions and MainFrame already has body links that carry enough information to resolve safely.
+- Change document IDs to stem-based IDs. Rejected because it would break existing databases and make duplicate filenames across domains unsafe.
+- Read `links:` frontmatter as the primary graph surface. Rejected for this change because body wikilinks are already the active graph syntax, and frontmatter links can be added later without changing the resolver contract.
+
+---

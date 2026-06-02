@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from mindgraph import cli, db
+from mindgraph import cli, db, parser
+from mindgraph.query import list_neighbors
 
 
 class FakeEmbedder:
@@ -74,6 +75,14 @@ def test_ingest_end_to_end(sample_notes, db_path, fake_embedder):
         assert len(edges) == 2
         rels = {e["relationship_type"] for e in edges}
         assert rels == {"lead", "peer"}
+        resolved_edges = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM edges e
+            JOIN documents d ON d.id = e.target_id
+            """
+        ).fetchone()[0]
+        assert resolved_edges == 1
 
         timeline_row = conn.execute(
             "SELECT timeline_text FROM documents WHERE path = ?",
@@ -93,6 +102,73 @@ def test_ingest_end_to_end(sample_notes, db_path, fake_embedder):
         assert fts_count == 3
     finally:
         conn.close()
+
+
+def test_ingest_resolves_neighbors_to_target_path(tmp_path, db_path, fake_embedder):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    agents = notes / "agents"
+    agents.mkdir()
+    ai_business = notes / "ai-business"
+    ai_business.mkdir()
+
+    (agents / "source.md").write_text(
+        "Connects to [[same-domain]] and [[cross-domain]].\n"
+    )
+    (agents / "same-domain.md").write_text("Same-domain target.\n")
+    (ai_business / "cross-domain.md").write_text("Cross-domain target.\n")
+
+    db.init_db(db_path).close()
+    cli._ingest_directory(notes, db_path)
+
+    conn = db.get_db(db_path)
+    try:
+        neighbors = list_neighbors(conn, parser.compute_doc_id("agents/source.md"))
+    finally:
+        conn.close()
+
+    target_paths = {edge.target_path for edge in neighbors}
+    assert target_paths == {"agents/same-domain.md", "ai-business/cross-domain.md"}
+
+
+def test_reingest_unchanged_source_refreshes_resolved_edges(
+    tmp_path, db_path, fake_embedder
+):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "source.md").write_text("Connects to [[target]] (relates).\n")
+
+    db.init_db(db_path).close()
+    cli._ingest_directory(notes, db_path)
+
+    conn = db.get_db(db_path)
+    try:
+        before = list_neighbors(conn, parser.compute_doc_id("source.md"))
+        before_rowids = sorted(
+            r["rowid"] for r in conn.execute("SELECT rowid FROM chunks")
+        )
+    finally:
+        conn.close()
+
+    assert before[0].target_path is None
+
+    (notes / "target.md").write_text("Target arrives later.\n")
+    stats = cli._ingest_directory(notes, db_path)
+    assert stats["ingested"] == 1
+    assert stats["skipped"] == 1
+    assert stats["failed"] == 0
+
+    conn = db.get_db(db_path)
+    try:
+        after = list_neighbors(conn, parser.compute_doc_id("source.md"))
+        after_rowids = sorted(
+            r["rowid"] for r in conn.execute("SELECT rowid FROM chunks")
+        )
+    finally:
+        conn.close()
+
+    assert after[0].target_path == "target.md"
+    assert before_rowids == after_rowids[: len(before_rowids)]
 
 
 def test_reingest_unchanged_is_skipped(sample_notes, db_path, fake_embedder):

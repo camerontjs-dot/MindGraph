@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 
 import typer
@@ -17,12 +18,30 @@ app = typer.Typer(
 logger = logging.getLogger("mindgraph")
 
 
+_NOISY_LOGGERS = (
+    "httpx",
+    "httpcore",
+    "huggingface_hub",
+    "huggingface_hub.utils._http",
+    "sentence_transformers",
+    "sentence_transformers.base.model",
+    "transformers",
+)
+
+
 def _configure_logging(verbose: bool) -> None:
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
+    logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+    for noisy_logger in _NOISY_LOGGERS:
+        logging.getLogger(noisy_logger).setLevel(
+            logging.WARNING if verbose else logging.ERROR
+        )
 
 
 def _load_embedder():
@@ -30,6 +49,16 @@ def _load_embedder():
 
     logger.info("Loading embedding model (all-MiniLM-L6-v2)...")
     return SentenceTransformer("all-MiniLM-L6-v2")
+
+
+def _encode_without_progress(embedder, texts):
+    """Encode text while suppressing sentence-transformers progress output."""
+    try:
+        return embedder.encode(
+            texts, convert_to_numpy=True, show_progress_bar=False
+        )
+    except TypeError:
+        return embedder.encode(texts, convert_to_numpy=True)
 
 
 def _ingest_directory(directory: Path, db_path: str) -> dict[str, int]:
@@ -43,17 +72,42 @@ def _ingest_directory(directory: Path, db_path: str) -> dict[str, int]:
 
     conn = db.get_db(db_path)
     model = None
+    parsed_docs: list[tuple[Path, parser.ParsedDocument]] = []
 
     try:
         for md_file in md_files:
             relative_path = str(md_file.relative_to(directory))
             try:
                 body_bytes = md_file.read_bytes()
-                parsed = parser.parse_document(relative_path, body_bytes)
+                parsed_docs.append(
+                    (md_file, parser.parse_document(relative_path, body_bytes))
+                )
+            except MindgraphError as e:
+                logger.error("failed: %s — %s", relative_path, e)
+                stats["failed"] += 1
+            except Exception:
+                logger.exception("unexpected failure: %s", relative_path)
+                stats["failed"] += 1
+
+        link_resolver = parser.LinkResolver.from_documents(
+            parsed for _, parsed in parsed_docs
+        )
+
+        for md_file, parsed in parsed_docs:
+            relative_path = parsed.path
+            try:
+                edges = parser.extract_graph_edges(
+                    parsed.truth_text,
+                    parsed.id,
+                    link_resolver=link_resolver,
+                    source_path=parsed.path,
+                )
 
                 existing_hash = db.get_document_hash(conn, parsed.id)
                 if existing_hash == parsed.content_hash:
-                    logger.info("skipped (unchanged): %s", relative_path)
+                    logger.debug("skipped (unchanged): %s", relative_path)
+                    with conn:
+                        db.replace_edges(conn, parsed.id, edges)
                     stats["skipped"] += 1
                     continue
 
@@ -62,10 +116,8 @@ def _ingest_directory(directory: Path, db_path: str) -> dict[str, int]:
                 if chunks:
                     if model is None:
                         model = _load_embedder()
-                    raw = model.encode(chunks, convert_to_numpy=True)
+                    raw = _encode_without_progress(model, chunks)
                     embeddings = [row.tolist() for row in raw]
-
-                edges = parser.extract_graph_edges(parsed.truth_text, parsed.id)
 
                 with conn:
                     db.upsert_document(conn, parsed)

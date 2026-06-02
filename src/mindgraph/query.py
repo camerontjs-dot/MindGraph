@@ -41,6 +41,16 @@ class Embedder(Protocol):
     def encode(self, texts, convert_to_numpy=True): ...  # pragma: no cover
 
 
+def _encode_without_progress(embedder: Embedder, texts):
+    """Encode text while suppressing sentence-transformers progress output."""
+    try:
+        return embedder.encode(
+            texts, convert_to_numpy=True, show_progress_bar=False
+        )
+    except TypeError:
+        return embedder.encode(texts, convert_to_numpy=True)
+
+
 def sanitize_fts5_query(text: str) -> str:
     """Strip FTS5 operator syntax and produce an OR-joined MATCH expression.
 
@@ -231,7 +241,7 @@ def run_query(
     lexical = fetch_lexical_ranking(conn, query_text, top_k=lexical_top_k)
 
     if semantic_top_k > 0:
-        raw = embedder.encode([query_text], convert_to_numpy=True)
+        raw = _encode_without_progress(embedder, [query_text])
         query_embedding = [float(x) for x in raw[0]]
         semantic = fetch_semantic_ranking(
             conn, query_embedding, top_k=semantic_top_k
