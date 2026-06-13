@@ -22,7 +22,7 @@ DEFAULT_FINAL_TOP_K = 10
 # free-text input before constructing a MATCH expression. FTS5 treats lowercase
 # `and`, `or`, `not`, `near` as ordinary tokens, so only the uppercase forms are
 # stripped as operators.
-_FTS5_OPERATOR_CHARS = re.compile(r'["*():^\-]')
+_FTS5_OPERATOR_CHARS = re.compile(r'["*():^\-=\[\]{}<>~+|?,/;!@#$%&_]')
 _FTS5_KEYWORD = re.compile(r"\b(?:AND|OR|NOT|NEAR)\b")
 
 
@@ -97,7 +97,8 @@ def fetch_lexical_ranking(
         )
         return [(row["id"], rank + 1) for rank, row in enumerate(cursor)]
     except sqlite3.Error as e:
-        raise QueryError(f"FTS5 query failed: {e}") from e
+        print(f"Warning: FTS5 query failed for match_expr={match_expr!r}: {e}")
+        return []
 
 
 def fetch_semantic_ranking(
