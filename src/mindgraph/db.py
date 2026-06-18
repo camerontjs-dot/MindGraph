@@ -11,7 +11,7 @@ from mindgraph.models import GraphEdge, ParsedDocument
 def get_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
     """Connect to the SQLite database and load the sqlite-vec extension."""
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30.0)
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)

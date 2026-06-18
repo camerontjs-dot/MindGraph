@@ -98,24 +98,31 @@ def create_server(
         expand_depth: int = query_mod.DEFAULT_EXPAND_DEPTH,
         expand_top_k: int = query_mod.DEFAULT_EXPAND_TOP_K,
     ) -> CallToolResult:
-        try:
-            results = query_mod.run_query(
-                conn,
-                question,
-                embedder,
-                lexical_top_k=lexical_top_k,
-                semantic_top_k=semantic_top_k,
-                final_top_k=final_top_k,
-                expand=expand,
-                expand_depth=expand_depth,
-                expand_top_k=expand_top_k,
-            )
-        except MindgraphError as e:
-            return _tool_error(str(e))
-        except Exception:
-            logger.exception("unexpected MCP query tool failure")
-            raise
-        return _json_result([result.model_dump() for result in results])
+        import time
+        for attempt in range(5):
+            try:
+                results = query_mod.run_query(
+                    conn,
+                    question,
+                    embedder,
+                    lexical_top_k=lexical_top_k,
+                    semantic_top_k=semantic_top_k,
+                    final_top_k=final_top_k,
+                    expand=expand,
+                    expand_depth=expand_depth,
+                    expand_top_k=expand_top_k,
+                )
+                return _json_result([result.model_dump() for result in results])
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                return _tool_error(f"Database error: {e}")
+            except MindgraphError as e:
+                return _tool_error(str(e))
+            except Exception:
+                logger.exception("unexpected MCP query tool failure")
+                raise
 
     @server.tool(
         name="graph_neighbors",
@@ -125,15 +132,22 @@ def create_server(
         ),
     )
     def graph_neighbors_tool(doc_id: str) -> CallToolResult:
-        try:
-            _ensure_document_exists(conn, doc_id)
-            results = query_mod.list_neighbors(conn, doc_id)
-        except MindgraphError as e:
-            return _tool_error(str(e))
-        except Exception:
-            logger.exception("unexpected MCP graph_neighbors tool failure")
-            raise
-        return _json_result([result.model_dump() for result in results])
+        import time
+        for attempt in range(5):
+            try:
+                _ensure_document_exists(conn, doc_id)
+                results = query_mod.list_neighbors(conn, doc_id)
+                return _json_result([result.model_dump() for result in results])
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                return _tool_error(f"Database error: {e}")
+            except MindgraphError as e:
+                return _tool_error(str(e))
+            except Exception:
+                logger.exception("unexpected MCP graph_neighbors tool failure")
+                raise
 
     return server
 
