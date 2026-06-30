@@ -17,6 +17,12 @@ class ParsedDocument(BaseModel):
     title: str
     path: str
     content_hash: str
+    index_id: str | None = None
+    trust_profile: str | None = None
+    namespace: str | None = None
+    source_root: str | None = None
+    source_path: str | None = None
+    display_path: str | None = None
     metadata: dict = Field(default_factory=dict)
     truth_text: str
     timeline_text: str | None = None
@@ -50,6 +56,12 @@ class QueryResult(BaseModel):
     doc_type: str | None = None
     domain: str | None = None
     status: str | None = None
+    index_id: str | None = None
+    trust_profile: str | None = None
+    namespace: str | None = None
+    source_root: str | None = None
+    source_path: str | None = None
+    display_path: str | None = None
     signal: Signal
     rrf_score: float
     lexical_rank: int | None

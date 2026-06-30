@@ -25,6 +25,12 @@ def compute_doc_id(relative_path: str) -> str:
     return hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:16]
 
 
+def compute_scoped_doc_id(index_id: str, namespace: str, source_path: str) -> str:
+    """Stable short hash for a document inside a named index namespace."""
+    scoped = f"{index_id}\0{namespace}\0{source_path}"
+    return compute_doc_id(scoped)
+
+
 def compute_content_hash(body_bytes: bytes) -> str:
     return hashlib.sha256(body_bytes).hexdigest()
 
@@ -45,6 +51,7 @@ class LinkResolver:
     """Resolve wikilink labels against documents in one ingest scope."""
 
     paths: set[str] = field(default_factory=set)
+    ids_by_path: dict[str, str] = field(default_factory=dict)
     stems: dict[str, set[str]] = field(default_factory=dict)
     titles: dict[str, set[str]] = field(default_factory=dict)
 
@@ -57,17 +64,21 @@ class LinkResolver:
 
     def add_document(self, doc: ParsedDocument) -> None:
         self.paths.add(doc.path)
+        self.ids_by_path[doc.path] = doc.id
         self.stems.setdefault(_normalize_lookup_key(Path(doc.path).stem), set()).add(
             doc.path
         )
         self.titles.setdefault(_normalize_lookup_key(doc.title), set()).add(doc.path)
+
+    def doc_id_for_path(self, path: str) -> str | None:
+        return self.ids_by_path.get(path)
 
     def resolve(self, target: str, source_path: str | None = None) -> str | None:
         normalized = _normalize_link_target(target)
         if normalized in self.paths:
             return normalized
 
-        if source_path is not None and "/" not in normalized:
+        if source_path is not None:
             sibling = str(Path(source_path).parent / normalized)
             if sibling in self.paths:
                 return sibling
@@ -129,11 +140,16 @@ def extract_graph_edges(
     for match in LINK_PATTERN.finditer(text):
         target_raw, relationship = match.groups()
         resolved_path = None
+        resolved_id = None
         if isinstance(link_resolver, LinkResolver):
             resolved_path = link_resolver.resolve(target_raw, source_path)
+            if resolved_path is not None:
+                resolved_id = link_resolver.doc_id_for_path(resolved_path)
         elif link_resolver is not None:
             resolved_path = link_resolver(target_raw, source_path)
-        target_id = compute_doc_id(resolved_path or _normalize_link_target(target_raw))
+        target_id = resolved_id or compute_doc_id(
+            resolved_path or _normalize_link_target(target_raw)
+        )
         edges.append(
             GraphEdge(
                 source_id=source_id,

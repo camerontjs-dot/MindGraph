@@ -388,6 +388,40 @@ class TestRunQuery:
             assert r.chunk_index >= 0
             assert r.rrf_score > 0
 
+    def test_scoped_ingest_provenance_fields_populated(
+        self, tmp_path, monkeypatch, keyword_embedder
+    ):
+        monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+        notes = tmp_path / "knowledge"
+        notes.mkdir()
+        (notes / "scoped.md").write_text("The zebra appears in durable knowledge.\n")
+        db_path = str(tmp_path / "scoped.sqlite")
+        cli._ingest_directory(
+            notes,
+            db_path,
+            index_id="mainframe-knowledge",
+            trust_profile="durable_knowledge",
+            namespace="knowledge",
+            source_root=notes,
+            display_prefix="10_knowledge",
+        )
+
+        conn = db.get_db(db_path)
+        try:
+            results = run_query(conn, "zebra", keyword_embedder, final_top_k=1)
+        finally:
+            conn.close()
+
+        assert len(results) == 1
+        row = results[0]
+        assert row.path == "10_knowledge/scoped.md"
+        assert row.display_path == "10_knowledge/scoped.md"
+        assert row.index_id == "mainframe-knowledge"
+        assert row.trust_profile == "durable_knowledge"
+        assert row.namespace == "knowledge"
+        assert row.source_root == str(notes)
+        assert row.source_path == "scoped.md"
+
     def test_final_top_k_limits_output(self, vault_db, keyword_embedder):
         conn = db.get_db(vault_db)
         try:
@@ -555,6 +589,12 @@ class TestQueryCLI:
                 "doc_type",
                 "domain",
                 "status",
+                "index_id",
+                "trust_profile",
+                "namespace",
+                "source_root",
+                "source_path",
+                "display_path",
                 "signal",
                 "rrf_score",
                 "lexical_rank",

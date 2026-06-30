@@ -324,12 +324,19 @@ def _coerce_optional_str(value) -> str | None:
 def _resolve_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
     """Resolve a document's display + frontmatter fields, or None if missing.
 
-    Returns path, title, and the `type`/`domain`/`status` frontmatter values.
-    `domain` is read from its dedicated column; `doc_type`/`status` come from
-    the stored `metadata_json`. All three are null when the source omits them.
+    Returns path, title, provenance, and the `type`/`domain`/`status`
+    frontmatter values. `domain` is read from its dedicated column;
+    `doc_type`/`status` come from the stored `metadata_json`. All three are
+    null when the source omits them.
     """
     row = conn.execute(
-        "SELECT path, title, domain, metadata_json FROM documents WHERE id = ?",
+        """
+        SELECT
+            path, title, domain, metadata_json, index_id, trust_profile,
+            namespace, source_root, source_path, display_path
+        FROM documents
+        WHERE id = ?
+        """,
         (doc_id,),
     ).fetchone()
     if row is None:
@@ -348,6 +355,12 @@ def _resolve_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
         "doc_type": _coerce_optional_str(metadata.get("type")),
         "domain": _coerce_optional_str(row["domain"]),
         "status": _coerce_optional_str(metadata.get("status")),
+        "index_id": _coerce_optional_str(row["index_id"]),
+        "trust_profile": _coerce_optional_str(row["trust_profile"]),
+        "namespace": _coerce_optional_str(row["namespace"]),
+        "source_root": _coerce_optional_str(row["source_root"]),
+        "source_path": _coerce_optional_str(row["source_path"]),
+        "display_path": _coerce_optional_str(row["display_path"]),
     }
 
 
@@ -421,6 +434,12 @@ def run_query(
                 doc_type=resolved["doc_type"],
                 domain=resolved["domain"],
                 status=resolved["status"],
+                index_id=resolved["index_id"],
+                trust_profile=resolved["trust_profile"],
+                namespace=resolved["namespace"],
+                source_root=resolved["source_root"],
+                source_path=resolved["source_path"],
+                display_path=resolved["display_path"],
                 signal=_attribute_signal(lex_rank, sem_rank),
                 rrf_score=round(rrf_score, 6),
                 lexical_rank=lex_rank,
@@ -496,6 +515,12 @@ def expand_results(
                         doc_type=resolved["doc_type"],
                         domain=resolved["domain"],
                         status=resolved["status"],
+                        index_id=resolved["index_id"],
+                        trust_profile=resolved["trust_profile"],
+                        namespace=resolved["namespace"],
+                        source_root=resolved["source_root"],
+                        source_path=resolved["source_path"],
+                        display_path=resolved["display_path"],
                         signal="expanded",
                         rrf_score=0.0,
                         lexical_rank=None,

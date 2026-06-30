@@ -1,13 +1,15 @@
 import json
 import logging
 import os
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 
 import typer
 
 from mindgraph import db, mcp_server, parser
 from mindgraph import query as query_mod
-from mindgraph.exceptions import MindgraphError
+from mindgraph.exceptions import IngestionError, MindgraphError
 
 app = typer.Typer(
     name="mindgraph",
@@ -61,26 +63,109 @@ def _encode_without_progress(embedder, texts):
         return embedder.encode(texts, convert_to_numpy=True)
 
 
-def _ingest_directory(directory: Path, db_path: str) -> dict[str, int]:
+@dataclass(frozen=True)
+class IngestScope:
+    root: Path
+    index_id: str | None = None
+    trust_profile: str | None = None
+    namespace: str | None = None
+    source_root: Path | None = None
+    display_prefix: str | None = None
+    include_globs: tuple[str, ...] = field(default_factory=tuple)
+    exclude_globs: tuple[str, ...] = field(default_factory=tuple)
+
+
+def _matches_any(path: str, patterns: tuple[str, ...]) -> bool:
+    return any(fnmatch(path, pattern) for pattern in patterns)
+
+
+def _markdown_files_for_scope(scope: IngestScope) -> list[Path]:
+    all_md = sorted(scope.root.rglob("*.md"))
+    selected: list[Path] = []
+    for md_file in all_md:
+        rel_path = md_file.relative_to(scope.root).as_posix()
+        if scope.include_globs and not _matches_any(rel_path, scope.include_globs):
+            continue
+        if scope.exclude_globs and _matches_any(rel_path, scope.exclude_globs):
+            continue
+        selected.append(md_file)
+    return selected
+
+
+def _display_path(prefix: str | None, source_path: str) -> str:
+    if not prefix:
+        return source_path
+    return f"{prefix.rstrip('/')}/{source_path}"
+
+
+def _apply_scope_provenance(
+    parsed: parser.ParsedDocument, scope: IngestScope
+) -> parser.ParsedDocument:
+    has_provenance = any(
+        (
+            scope.index_id,
+            scope.trust_profile,
+            scope.namespace,
+            scope.source_root,
+            scope.display_prefix,
+        )
+    )
+    if not has_provenance:
+        return parsed
+
+    source_path = parsed.path
+    namespace = scope.namespace or ""
+    doc_id = parsed.id
+    if scope.index_id and namespace:
+        doc_id = parser.compute_scoped_doc_id(scope.index_id, namespace, source_path)
+    display_path = _display_path(scope.display_prefix, source_path)
+    source_root = scope.source_root or scope.root
+    return parsed.model_copy(
+        update={
+            "id": doc_id,
+            "path": display_path,
+            "index_id": scope.index_id,
+            "trust_profile": scope.trust_profile,
+            "namespace": namespace or None,
+            "source_root": str(source_root),
+            "source_path": source_path,
+            "display_path": display_path,
+        }
+    )
+
+
+def _doc_id_for_scope_file(scope: IngestScope, source_path: str) -> str:
+    namespace = scope.namespace or ""
+    if scope.index_id and namespace:
+        return parser.compute_scoped_doc_id(scope.index_id, namespace, source_path)
+    return parser.compute_doc_id(source_path)
+
+
+def _ingest_scopes(scopes: list[IngestScope], db_path: str) -> dict[str, int]:
     stats = {"total": 0, "ingested": 0, "skipped": 0, "pruned": 0, "failed": 0}
-    md_files = sorted(directory.rglob("*.md"))
+    scope_files: list[tuple[IngestScope, Path]] = []
+    for scope in scopes:
+        md_files = _markdown_files_for_scope(scope)
+        scope_files.extend((scope, md_file) for md_file in md_files)
+    md_files = [md_file for _, md_file in scope_files]
     stats["total"] = len(md_files)
 
     if not md_files:
-        logger.warning("No markdown files found under %s", directory)
+        logger.warning("No markdown files found in ingest scope(s)")
         return stats
 
-    conn = db.get_db(db_path)
+    conn = db.init_db(db_path)
     model = None
     parsed_docs: list[tuple[Path, parser.ParsedDocument]] = []
 
     try:
-        for md_file in md_files:
-            relative_path = str(md_file.relative_to(directory))
+        for scope, md_file in scope_files:
+            relative_path = md_file.relative_to(scope.root).as_posix()
             try:
                 body_bytes = md_file.read_bytes()
+                parsed = parser.parse_document(relative_path, body_bytes)
                 parsed_docs.append(
-                    (md_file, parser.parse_document(relative_path, body_bytes))
+                    (md_file, _apply_scope_provenance(parsed, scope))
                 )
             except MindgraphError as e:
                 logger.error("failed: %s — %s", relative_path, e)
@@ -149,14 +234,15 @@ def _ingest_directory(directory: Path, db_path: str) -> dict[str, int]:
                 logger.exception("unexpected failure: %s", relative_path)
                 stats["failed"] += 1
 
-        # Prune documents whose source file no longer exists. The scope walk
-        # above (md_files) is authoritative for this ingest root, so any DB
-        # document not backed by a current file is a deleted/renamed orphan.
+        # Prune documents whose source file no longer exists. The selected file
+        # walk is authoritative for this ingest root, including files that failed
+        # to parse in this run; a partial refresh should not delete still-present
+        # rows just because one source is temporarily malformed.
         # Materialize the id list before deleting so we don't mutate a live
         # cursor. Inbound edges are left dangling by design (see delete_document).
         on_disk_ids = {
-            parser.compute_doc_id(str(md_file.relative_to(directory)))
-            for md_file in md_files
+            _doc_id_for_scope_file(scope, md_file.relative_to(scope.root).as_posix())
+            for scope, md_file in scope_files
         }
         db_ids = [row["id"] for row in conn.execute("SELECT id FROM documents")]
         orphans = [doc_id for doc_id in db_ids if doc_id not in on_disk_ids]
@@ -170,6 +256,106 @@ def _ingest_directory(directory: Path, db_path: str) -> dict[str, int]:
         conn.close()
 
     return stats
+
+
+def _ingest_directory(
+    directory: Path,
+    db_path: str,
+    *,
+    index_id: str | None = None,
+    trust_profile: str | None = None,
+    namespace: str | None = None,
+    source_root: Path | None = None,
+    display_prefix: str | None = None,
+    include_globs: tuple[str, ...] | None = None,
+    exclude_globs: tuple[str, ...] | None = None,
+) -> dict[str, int]:
+    return _ingest_scopes(
+        [
+            IngestScope(
+                root=directory,
+                index_id=index_id,
+                trust_profile=trust_profile,
+                namespace=namespace,
+                source_root=source_root,
+                display_prefix=display_prefix,
+                include_globs=include_globs or (),
+                exclude_globs=exclude_globs or (),
+            )
+        ],
+        db_path,
+    )
+
+
+def _coerce_globs(value, field_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise IngestionError(f"manifest field {field_name!r} must be a list")
+    globs: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise IngestionError(
+                f"manifest field {field_name!r} must contain non-empty strings"
+            )
+        globs.append(item.strip())
+    return tuple(globs)
+
+
+def _resolve_manifest_path(value: str, manifest_dir: Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = manifest_dir / path
+    return path.resolve()
+
+
+def _load_ingest_manifest(manifest_path: Path) -> list[IngestScope]:
+    try:
+        payload = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as e:
+        raise IngestionError(f"manifest is not valid JSON: {e}") from e
+    if not isinstance(payload, dict):
+        raise IngestionError("manifest must be a JSON object")
+
+    scopes_payload = payload.get("scopes")
+    if not isinstance(scopes_payload, list) or not scopes_payload:
+        raise IngestionError("manifest must include a non-empty 'scopes' list")
+
+    manifest_dir = manifest_path.resolve().parent
+    scopes: list[IngestScope] = []
+    for idx, entry in enumerate(scopes_payload, start=1):
+        if not isinstance(entry, dict):
+            raise IngestionError(f"manifest scope #{idx} must be an object")
+        root_value = entry.get("root") or entry.get("path")
+        if not isinstance(root_value, str) or not root_value.strip():
+            raise IngestionError(f"manifest scope #{idx} requires a root path")
+        root = _resolve_manifest_path(root_value, manifest_dir)
+        if not root.is_dir():
+            raise IngestionError(f"manifest scope #{idx} root is not a directory: {root}")
+        source_root_value = entry.get("source_root")
+        source_root = (
+            _resolve_manifest_path(source_root_value, manifest_dir)
+            if isinstance(source_root_value, str) and source_root_value.strip()
+            else root
+        )
+        scopes.append(
+            IngestScope(
+                root=root,
+                index_id=entry.get("index_id") or payload.get("index_id"),
+                trust_profile=entry.get("trust_profile")
+                or payload.get("trust_profile"),
+                namespace=entry.get("namespace"),
+                source_root=source_root,
+                display_prefix=entry.get("display_prefix"),
+                include_globs=_coerce_globs(
+                    entry.get("include") or payload.get("include"), "include"
+                ),
+                exclude_globs=_coerce_globs(
+                    entry.get("exclude") or payload.get("exclude"), "exclude"
+                ),
+            )
+        )
+    return scopes
 
 
 @app.command()
@@ -193,12 +379,35 @@ def ingest(
         ..., exists=True, file_okay=False, dir_okay=True, readable=True
     ),
     db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
+    index_id: str | None = typer.Option(
+        None, "--index-id", help="Optional lifecycle/index identifier."
+    ),
+    trust_profile: str | None = typer.Option(
+        None, "--trust-profile", help="Optional trust profile for every document."
+    ),
+    namespace: str | None = typer.Option(
+        None, "--namespace", help="Optional namespace for scoped document IDs."
+    ),
+    source_root: Path | None = typer.Option(
+        None, "--source-root", help="Absolute source root stored as provenance."
+    ),
+    display_prefix: str | None = typer.Option(
+        None, "--display-prefix", help="Path prefix shown to query clients."
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Ingest a directory of markdown files."""
     _configure_logging(verbose)
     try:
-        stats = _ingest_directory(directory, db_path)
+        stats = _ingest_directory(
+            directory,
+            db_path,
+            index_id=index_id,
+            trust_profile=trust_profile,
+            namespace=namespace,
+            source_root=source_root,
+            display_prefix=display_prefix,
+        )
         logger.info(
             "Done. total=%d ingested=%d skipped=%d pruned=%d failed=%d",
             stats["total"],
@@ -208,6 +417,40 @@ def ingest(
             stats["failed"],
         )
         if stats["failed"]:
+            raise typer.Exit(code=1)
+    except MindgraphError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+
+
+@app.command("ingest-many")
+def ingest_many(
+    manifest: Path = typer.Argument(
+        ..., exists=True, file_okay=True, dir_okay=False, readable=True
+    ),
+    db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
+    allow_failures: bool = typer.Option(
+        False,
+        "--allow-failures",
+        help="Keep a partial index when some files fail to parse or ingest.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Ingest multiple markdown roots from a JSON manifest as one index."""
+    _configure_logging(verbose)
+    try:
+        scopes = _load_ingest_manifest(manifest)
+        stats = _ingest_scopes(scopes, db_path)
+        logger.info(
+            "Done. scopes=%d total=%d ingested=%d skipped=%d pruned=%d failed=%d",
+            len(scopes),
+            stats["total"],
+            stats["ingested"],
+            stats["skipped"],
+            stats["pruned"],
+            stats["failed"],
+        )
+        if stats["failed"] and not allow_failures:
             raise typer.Exit(code=1)
     except MindgraphError as e:
         logger.error(str(e))
@@ -240,11 +483,26 @@ def _format_query_result_block(idx: int, result) -> str:
         if value
     ]
     meta_line = f"    meta: {'  '.join(meta_parts)}\n" if meta_parts else ""
+    provenance_parts = [
+        f"{label}={value}"
+        for label, value in (
+            ("index", result.index_id),
+            ("trust", result.trust_profile),
+            ("namespace", result.namespace),
+        )
+        if value
+    ]
+    provenance_line = (
+        f"    provenance: {'  '.join(provenance_parts)}\n"
+        if provenance_parts
+        else ""
+    )
     return (
         f"{header}\n"
         f"    path: {result.path}\n"
         f"    title: {result.title}\n"
         f"{meta_line}"
+        f"{provenance_line}"
         f"    chunk_index: {result.chunk_index}\n"
         f"    excerpt: {excerpt}"
     )

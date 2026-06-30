@@ -22,6 +22,11 @@ def get_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
         # persistent property of the file, so issuing it on every connection is
         # idempotent and also migrates a pre-existing rollback-journal DB.
         conn.execute("PRAGMA journal_mode = WAL")
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
+        ).fetchone():
+            with conn:
+                _ensure_document_provenance_columns(conn)
         return conn
     except sqlite3.Error as e:
         raise DatabaseError(f"Failed to open database at {db_path}: {e}") from e
@@ -39,12 +44,19 @@ def init_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
                 path TEXT,
                 domain TEXT,
                 content_hash TEXT NOT NULL,
+                index_id TEXT,
+                trust_profile TEXT,
+                namespace TEXT,
+                source_root TEXT,
+                source_path TEXT,
+                display_path TEXT,
                 timeline_text TEXT,
                 metadata_json TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
         """)
+        _ensure_document_provenance_columns(conn)
 
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
@@ -81,6 +93,24 @@ def init_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
         """)
 
     return conn
+
+
+def _ensure_document_provenance_columns(conn: sqlite3.Connection) -> None:
+    """Add provenance columns to older databases without requiring a rebuild."""
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+    }
+    for column in (
+        "index_id",
+        "trust_profile",
+        "namespace",
+        "source_root",
+        "source_path",
+        "display_path",
+    ):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE documents ADD COLUMN {column} TEXT")
 
 
 def _serialize_embedding(vec: list[float]) -> bytes:
@@ -144,8 +174,12 @@ def upsert_document(conn: sqlite3.Connection, doc: ParsedDocument) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO documents
-            (id, title, path, domain, content_hash, timeline_text, metadata_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (
+                id, title, path, domain, content_hash, index_id, trust_profile,
+                namespace, source_root, source_path, display_path,
+                timeline_text, metadata_json, created_at, updated_at
+            )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             doc.id,
@@ -153,8 +187,14 @@ def upsert_document(conn: sqlite3.Connection, doc: ParsedDocument) -> None:
             doc.path,
             doc.metadata.get("domain"),
             doc.content_hash,
+            doc.index_id,
+            doc.trust_profile,
+            doc.namespace,
+            doc.source_root,
+            doc.source_path,
+            doc.display_path,
             doc.timeline_text,
-            json.dumps(doc.metadata),
+            json.dumps(doc.metadata, default=str),
             created_at,
             now,
         ),

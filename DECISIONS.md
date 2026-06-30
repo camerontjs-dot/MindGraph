@@ -4,6 +4,20 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-06-19 — Namespaced multi-root ingest and provenance rows
+
+**Decision:** MindGraph keeps ordinary `mindgraph ingest <directory>` backward-compatible with path-derived document IDs, but adds `mindgraph ingest-many <manifest>` for multiple Markdown roots that must be indexed as one logical store. Scoped ingest rows carry `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, and `display_path`. When `index_id` and `namespace` are present, document IDs are derived from `index_id + namespace + source_path`, so repeated filenames such as `README.md` remain distinct across project roots.
+
+**Rejected alternatives:** Rejected looping over `ingest <project>` because each run prunes against one root and can erase other projects. Rejected a blended MainFrame graph because the knowledge/project trust boundary belongs above the engine. Rejected frontmatter-only identity because many coordination files share titles and filenames across project folders.
+
+**Rationale:** MainFrame needs a project-context database that can index many `30_projects/<slug>/` coordination surfaces without file-name collisions or root-by-root pruning. Provenance fields make trust labels explicit for CLI, MCP, and workstation consumers instead of forcing clients to infer authority from path strings. Keeping the old single-root ID rule avoids surprising existing vault users.
+
+**Measurement:** Engine tests cover duplicate `README.md` files in separate namespaces, scoped link resolution, union pruning, manifest loading through the CLI, and query-result provenance. MainFrame wrapper verification covers dry-run output and a temporary project DB with multiple namespaces.
+
+**Consequences:** Query JSON remains a top-level list of rows, but each row can now carry nullable provenance fields. Clients that know MainFrame can use `source_root + source_path` for safe file links and `path`/`display_path` for human display. Future station features can group by trust profile without changing the database separation rule.
+
+---
+
 ## 2026-06-17 — Query scope warnings for lifecycle-state requests
 
 **Decision:** `mindgraph query` adds an additive query-scope warning when the query text appears to ask for inbox/routing state, current live state, or project-status state. The warning is copied onto each returned `QueryResult` as `query_scope_warning` and shown once in human-readable CLI output. It does not affect lexical ranking, semantic ranking, RRF fusion, graph expansion, or `weak_fit`.

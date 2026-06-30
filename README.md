@@ -9,7 +9,7 @@ This is the engine I run against Mainframe, my own Markdown knowledge base. Any 
 - Parses Markdown files. Reads optional YAML frontmatter for a `title` and a `domain`.
 - Splits each note into a Truth body and an optional Timeline section on a `---` rule followed by a `## Timeline` heading.
 - Extracts `[[target]]` and `[[target]] (relationship)` links as typed graph edges, with link targets normalized to add `.md` when missing.
-- Computes a stable document ID from `sha256(relative_path)` and a content hash from the file bytes.
+- Computes a stable document ID from `sha256(relative_path)` for ordinary single-root ingest, or from `index_id + namespace + source_path` for scoped multi-root ingest.
 - Skips re-embedding when the content hash matches an existing row.
 - Chunks the Truth body into paragraphs packed up to `max_chars`, keeping paragraphs whole.
 - Embeds chunks with `sentence-transformers/all-MiniLM-L6-v2` at 384 dimensions.
@@ -24,7 +24,7 @@ This is the engine I run against Mainframe, my own Markdown knowledge base. Any 
 
 Each result carries a `signal` label (`lexical`, `semantic`, `fused`, or `expanded`), a `rrf_score`, and the per-signal `lexical_rank` and `semantic_rank` integers, so the attribution is mechanically verifiable. Ties break by `(doc_id, chunk_index)` lexicographic for deterministic output. Free-text queries pass through an FTS5 sanitizer that strips operator characters and the uppercase keywords `AND`, `OR`, `NOT`, `NEAR`, then OR-joins the surviving tokens.
 
-Result rows also carry trust metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
+Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
 
 `mindgraph query --expand` adds a third signal as a labeled append. After the fused list returns, the query walks outbound `[[link]]` edges from each fused result to a bounded depth (`--depth N`, default 1, cap 3) and appends walked documents to the result list with `signal = "expanded"` and an `expansion_depth` integer. The walk is outbound only, deduplicates against the fused set, terminates at dangling edges, and does not interact with the RRF math. `--expand-top-k N` (default 20) caps the number of appended expanded rows.
 
@@ -45,6 +45,8 @@ Result rows also carry trust metadata for consumers that need to decide what to 
 mindgraph init --db mindgraph.sqlite
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --verbose
+mindgraph ingest path/to/your/vault --db mindgraph.sqlite --index-id mainframe-knowledge --trust-profile durable_knowledge --namespace knowledge --display-prefix 10_knowledge
+mindgraph ingest-many path/to/manifest.json --db mindgraph.sqlite
 mindgraph query "what does this vault say about X" --db mindgraph.sqlite
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json
 mindgraph query "..." --db mindgraph.sqlite --expand

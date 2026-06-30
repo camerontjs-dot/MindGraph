@@ -1,5 +1,8 @@
+import json
+
 import numpy as np
 import pytest
+from typer.testing import CliRunner
 
 from mindgraph import cli, db, parser
 from mindgraph.query import list_neighbors
@@ -100,6 +103,31 @@ def test_ingest_end_to_end(sample_notes, db_path, fake_embedder):
             "SELECT COUNT(*) FROM documents_fts"
         ).fetchone()[0]
         assert fts_count == 3
+    finally:
+        conn.close()
+
+
+def test_ingest_serializes_yaml_date_metadata(tmp_path, db_path, fake_embedder):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "dated.md").write_text(
+        "---\ntitle: Dated Note\nupdated: 2026-06-19\n---\nDate metadata.\n"
+    )
+
+    db.init_db(db_path).close()
+    stats = cli._ingest_directory(notes, db_path)
+    assert stats["ingested"] == 1
+    assert stats["failed"] == 0
+
+    conn = db.get_db(db_path)
+    try:
+        metadata = json.loads(
+            conn.execute(
+                "SELECT metadata_json FROM documents WHERE path = ?",
+                ("dated.md",),
+            ).fetchone()["metadata_json"]
+        )
+        assert metadata["updated"] == "2026-06-19"
     finally:
         conn.close()
 
@@ -393,5 +421,207 @@ def test_pruned_doc_leaves_inbound_edges_dangling(tmp_path, db_path, fake_embedd
         # The inbound edge survives but now dangles (target row removed).
         assert len(after) == 1
         assert after[0].target_path is None
+    finally:
+        conn.close()
+
+
+def test_ingest_many_namespaces_duplicate_project_paths_and_prunes_union(
+    tmp_path, db_path, fake_embedder
+):
+    projects = tmp_path / "30_projects"
+    alpha = projects / "alpha"
+    beta = projects / "beta"
+    alpha.mkdir(parents=True)
+    beta.mkdir(parents=True)
+    (alpha / "README.md").write_text(
+        "---\ntitle: Alpha Project\n---\nAlpha status links to [[decisions]] (records).\n"
+    )
+    (alpha / "decisions.md").write_text("Alpha decision record.\n")
+    (alpha / "workbench").mkdir()
+    (alpha / "workbench" / "README.md").write_text("Noisy nested source.\n")
+    (beta / "README.md").write_text(
+        "---\ntitle: Beta Project\n---\nBeta status is separate.\n"
+    )
+
+    def scope(slug, root):
+        return cli.IngestScope(
+            root=root,
+            index_id="mainframe-projects",
+            trust_profile="project_status",
+            namespace=slug,
+            source_root=root,
+            display_prefix=f"30_projects/{slug}",
+            include_globs=("README.md", "decisions.md"),
+            exclude_globs=("workbench/*", "workbench/**/*"),
+        )
+
+    db.init_db(db_path).close()
+    stats = cli._ingest_scopes([scope("alpha", alpha), scope("beta", beta)], db_path)
+    assert stats["total"] == 3
+    assert stats["ingested"] == 3
+    assert stats["failed"] == 0
+
+    alpha_readme_id = parser.compute_scoped_doc_id(
+        "mainframe-projects", "alpha", "README.md"
+    )
+    beta_readme_id = parser.compute_scoped_doc_id(
+        "mainframe-projects", "beta", "README.md"
+    )
+    assert alpha_readme_id != beta_readme_id
+
+    conn = db.get_db(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, path, index_id, trust_profile, namespace, source_root,
+                   source_path, display_path
+            FROM documents
+            ORDER BY path
+            """
+        ).fetchall()
+        assert {row["path"] for row in rows} == {
+            "30_projects/alpha/README.md",
+            "30_projects/alpha/decisions.md",
+            "30_projects/beta/README.md",
+        }
+        by_id = {row["id"]: row for row in rows}
+        assert by_id[alpha_readme_id]["namespace"] == "alpha"
+        assert by_id[alpha_readme_id]["index_id"] == "mainframe-projects"
+        assert by_id[alpha_readme_id]["trust_profile"] == "project_status"
+        assert by_id[alpha_readme_id]["source_path"] == "README.md"
+        assert by_id[alpha_readme_id]["display_path"] == (
+            "30_projects/alpha/README.md"
+        )
+
+        neighbors = list_neighbors(conn, alpha_readme_id)
+        assert len(neighbors) == 1
+        assert neighbors[0].target_path == "30_projects/alpha/decisions.md"
+    finally:
+        conn.close()
+
+    (beta / "README.md").unlink()
+    stats = cli._ingest_scopes([scope("alpha", alpha), scope("beta", beta)], db_path)
+    assert stats["pruned"] == 1
+
+    conn = db.get_db(db_path)
+    try:
+        paths = {row["path"] for row in conn.execute("SELECT path FROM documents")}
+        assert paths == {
+            "30_projects/alpha/README.md",
+            "30_projects/alpha/decisions.md",
+        }
+    finally:
+        conn.close()
+
+
+def test_ingest_many_command_loads_manifest(tmp_path, db_path, fake_embedder):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "README.md").write_text("Manifest project status.\n")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "index_id": "mainframe-projects",
+                "trust_profile": "project_status",
+                "include": ["README.md"],
+                "scopes": [
+                    {
+                        "namespace": "manifest-project",
+                        "root": str(project),
+                        "source_root": str(project),
+                        "display_prefix": "30_projects/manifest-project",
+                    }
+                ],
+            }
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-many", str(manifest), "--db", db_path])
+    assert result.exit_code == 0
+
+    conn = db.get_db(db_path)
+    try:
+        row = conn.execute(
+            "SELECT path, namespace FROM documents"
+        ).fetchone()
+        assert row["path"] == "30_projects/manifest-project/README.md"
+        assert row["namespace"] == "manifest-project"
+    finally:
+        conn.close()
+
+
+def test_ingest_many_allow_failures_keeps_partial_index(
+    tmp_path, db_path, fake_embedder
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "good.md").write_text("Good project context.\n")
+    (project / "bad.md").write_text("---\nupdated: bad: yaml\n---\nBad.\n")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "include": ["*.md"],
+                "scopes": [
+                    {
+                        "namespace": "partial",
+                        "root": str(project),
+                        "display_prefix": "30_projects/partial",
+                    }
+                ],
+            }
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["ingest-many", str(manifest), "--db", db_path, "--allow-failures"],
+    )
+    assert result.exit_code == 0
+
+    conn = db.get_db(db_path)
+    try:
+        paths = {row["path"] for row in conn.execute("SELECT path FROM documents")}
+        assert paths == {"30_projects/partial/good.md"}
+    finally:
+        conn.close()
+
+
+def test_ingest_many_allow_failures_does_not_prune_still_present_bad_file(
+    tmp_path, db_path, fake_embedder
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "good.md").write_text("Good project context.\n")
+    (project / "fragile.md").write_text("Initially valid project context.\n")
+    scope = cli.IngestScope(
+        root=project,
+        index_id="mainframe-projects",
+        trust_profile="project_status",
+        namespace="partial",
+        source_root=project,
+        display_prefix="30_projects/partial",
+        include_globs=("*.md",),
+    )
+
+    db.init_db(db_path).close()
+    stats = cli._ingest_scopes([scope], db_path)
+    assert stats["ingested"] == 2
+
+    (project / "fragile.md").write_text("---\nupdated: bad: yaml\n---\nBad.\n")
+    stats = cli._ingest_scopes([scope], db_path)
+    assert stats["failed"] == 1
+    assert stats["pruned"] == 0
+
+    conn = db.get_db(db_path)
+    try:
+        paths = {row["path"] for row in conn.execute("SELECT path FROM documents")}
+        assert paths == {
+            "30_projects/partial/good.md",
+            "30_projects/partial/fragile.md",
+        }
     finally:
         conn.close()
