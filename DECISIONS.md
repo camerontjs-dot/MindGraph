@@ -4,6 +4,69 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-06-29 — Separate V1 intent graph compiler and read-only traversal
+
+**Status:** Accepted for Phase 2 implementation in the workbench. Runtime
+routing and operational installation remain deferred.
+
+**Context:** MindGraph's durable and project databases contain ranked document
+nominations. The remodel needs a procedural graph for reviewed goals,
+prerequisites, constraints, and capability hints without contaminating those
+indexes or making a model responsible for deterministic fallback.
+
+**Decision:** Add a separate intent-control subsystem whose immutable source is
+a directory of reviewed, versioned YAML graph files. The workbench compiles the
+validated corpus into one standalone SQLite artifact containing graph-version,
+node, alias, edge, binding, and deterministic-rule tables. The compiler uses
+canonical semantic JSON hashes, stable row ordering, fixed SQLite creation
+settings, complete pre-replacement validation, and same-directory atomic
+replacement. It records no wall-clock compilation metadata and never imports
+the document-index schema or sqlite-vec.
+
+Approved version history is append-only. A new version names the version it
+supersedes; generated effective status marks the single head approved and its
+ancestors superseded. Recompilation must retain every previously compiled
+version with the same source hash. Removal, mutation, missing lineage, or forks
+fail before the destination changes.
+
+V1 nodes are `goal`, `capability`, or `constraint`. Controlled relations are
+`decomposes_to`, `requires`, `next_step`, `blocked_by`, and `routes_to`, with
+kind-compatible endpoints. `decomposes_to`, `requires`, and `next_step` are
+independently acyclic. Bindings are typed URI references rather than
+cross-database foreign keys. Required unavailable bindings fail compilation;
+optional unavailable bindings remain visible but cannot become hints.
+
+Resolution is deterministic: trusted explicit goal ID, exact normalized goal
+label/alias, highest-priority scope/token rule, then an explicit no-match
+fallback. Tied highest-priority rules selecting different goals refuse. Default
+traversal follows sorted `requires` edges depth-first with inclusive limits of
+depth 2 and 64 nodes, returns the complete visited node/edge trace, surfaces
+constraints as warnings, and emits only capability references present in an
+explicit caller allowlist.
+
+**Defensive behavior:** Alias collisions and controlled cycles are rejected in
+approved source at compile time. Runtime still detects and refuses either
+condition if a corrupt or non-approved store violates those invariants. This
+keeps the Phase 1 ambiguity/cycle contracts meaningful without permitting an
+invalid approved graph.
+
+**Result contract:** `IntentResolution` carries graph ID/version/source hash,
+resolution method, outcome, matched and prerequisite goals, node and edge path,
+capability and rejected-capability hints, constraints, warnings, truncation,
+and refusal fields. An additive adapter emits the existing fixture-evaluator
+candidate shape without importing the evaluation project.
+
+**Consequences:** Phase 2 creates and opens only temporary test artifacts. It
+does not install `~/.mindgraph/mainframe-intent.sqlite`, add a CLI command,
+change the query/MCP response shape, implement a router, or alter any retrieval
+database. Operational installation and deterministic routing require their
+later phase gates.
+
+**Rejected alternatives:** Reusing the document `edges` table; embedding intent
+nodes; model-first classification; automatic extraction from transcripts;
+silently selecting one ambiguous alias/rule; treating a capability hint as
+authority; and writing directly to the operational path during compilation.
+
 ## 2026-06-19 — Query-time semantic association (MainFrame ADR-034)
 
 **Status:** Accepted; shipped in MainFrame commit `1292c22`.

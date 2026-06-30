@@ -1,0 +1,280 @@
+source_ref: &source_ref "plan://30_projects/mindgraph/plans/mindgraph-remodel-plan.md"
+reviewer: &reviewer "operator:cameron"
+
+documents:
+  phase1:
+    schema_version: "1"
+    graph:
+      id: "mainframe.core"
+      version: "2026-06-29.1"
+      status: "approved"
+      created_at: "2026-06-29T00:00:00Z"
+      reviewed_at: "2026-06-29T00:00:00Z"
+      reviewed_by: [*reviewer]
+      source_refs: [*source_ref]
+      supersedes: null
+    nodes:
+      - id: "goal.mindgraph-remodel"
+        kind: "goal"
+        label: "MindGraph remodel"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "goal.route-contract-evaluation"
+        kind: "goal"
+        label: "Route contract evaluation"
+        aliases: ["Run the route contract checks."]
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "goal.intent-schema-validation"
+        kind: "goal"
+        label: "Intent schema validation"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "goal.project-status-review"
+        kind: "goal"
+        label: "Project status review"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "goal.deep-root"
+        kind: "goal"
+        label: "Deep root"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "goal.deep-1"
+        kind: "goal"
+        label: "Deep one"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "goal.deep-2"
+        kind: "goal"
+        label: "Deep two"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "goal.deep-3"
+        kind: "goal"
+        label: "Deep three"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "capability.fixture-evaluator"
+        kind: "capability"
+        label: "Fixture evaluator"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "capability.mindgraph-projects"
+        kind: "capability"
+        label: "MindGraph projects retriever"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "capability.gmail"
+        kind: "capability"
+        label: "Gmail retriever"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "capability.optional"
+        kind: "capability"
+        label: "Optional unavailable capability"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+      - id: "constraint.review-required"
+        kind: "constraint"
+        label: "Review required"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+    edges:
+      - source_id: "goal.mindgraph-remodel"
+        target_id: "goal.route-contract-evaluation"
+        relation: "requires"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.route-contract-evaluation"
+        target_id: "goal.intent-schema-validation"
+        relation: "requires"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.mindgraph-remodel"
+        target_id: "capability.mindgraph-projects"
+        relation: "routes_to"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.mindgraph-remodel"
+        target_id: "capability.fixture-evaluator"
+        relation: "routes_to"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.route-contract-evaluation"
+        target_id: "capability.fixture-evaluator"
+        relation: "routes_to"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.project-status-review"
+        target_id: "capability.mindgraph-projects"
+        relation: "routes_to"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.project-status-review"
+        target_id: "capability.gmail"
+        relation: "routes_to"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.project-status-review"
+        target_id: "capability.optional"
+        relation: "routes_to"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.mindgraph-remodel"
+        target_id: "constraint.review-required"
+        relation: "blocked_by"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.deep-root"
+        target_id: "goal.deep-1"
+        relation: "requires"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.deep-1"
+        target_id: "goal.deep-2"
+        relation: "requires"
+        status: "active"
+        source_refs: [*source_ref]
+      - source_id: "goal.deep-2"
+        target_id: "goal.deep-3"
+        relation: "requires"
+        status: "active"
+        source_refs: [*source_ref]
+    bindings:
+      - id: "binding.fixture-evaluator"
+        node_id: "capability.fixture-evaluator"
+        ref: "capability://fixture-evaluator"
+        required: true
+        availability: "available"
+        source_refs: ["project://mindgraph-eval"]
+      - id: "binding.mindgraph-projects"
+        node_id: "capability.mindgraph-projects"
+        ref: "retriever://mindgraph-projects"
+        required: true
+        availability: "available"
+        source_refs: ["project://mindgraph"]
+      - id: "binding.gmail"
+        node_id: "capability.gmail"
+        ref: "retriever://gmail"
+        required: false
+        availability: "available"
+        source_refs: ["project://mindgraph"]
+      - id: "binding.optional"
+        node_id: "capability.optional"
+        ref: "capability://optional-unavailable"
+        required: false
+        availability: "unavailable"
+        source_refs: ["project://mindgraph"]
+    rules:
+      - id: "rule.project-status-review"
+        priority: 100
+        goal_id: "goal.project-status-review"
+        match:
+          scope: "project_status"
+          all_terms: ["project", "status"]
+          any_terms: ["review", "next"]
+        source_refs: ["decision://30_projects/mindgraph/decisions.md"]
+
+  predecessor:
+    schema_version: "1"
+    graph:
+      id: "mainframe.core"
+      version: "2026-06-28.1"
+      status: "approved"
+      created_at: "2026-06-28T00:00:00Z"
+      reviewed_at: "2026-06-28T00:00:00Z"
+      reviewed_by: [*reviewer]
+      source_refs: [*source_ref]
+      supersedes: null
+    nodes:
+      - id: "goal.baseline"
+        kind: "goal"
+        label: "Baseline"
+        aliases: []
+        status: "active"
+        source_refs: [*source_ref]
+    edges: []
+    bindings: []
+    rules: []
+
+invalid_cases:
+  duplicate_id:
+    expected_error: "intent_duplicate_id"
+  alias_collision:
+    expected_error: "intent_alias_ambiguous"
+  missing_target:
+    expected_error: "intent_missing_target"
+  invalid_relation:
+    expected_error: "intent_relation_invalid"
+  kind_mismatch:
+    expected_error: "intent_kind_mismatch"
+  requires_cycle:
+    expected_error: "intent_cycle_detected"
+    expected_witness: ["goal.cyclic-a", "goal.cyclic-b", "goal.cyclic-a"]
+  decomposes_cycle:
+    expected_error: "intent_cycle_detected"
+  next_step_cycle:
+    expected_error: "intent_cycle_detected"
+  missing_predecessor:
+    expected_error: "intent_version_missing"
+  version_fork:
+    expected_error: "intent_version_fork"
+  changed_approved_version:
+    expected_error: "intent_version_conflict"
+  required_unavailable_binding:
+    expected_error: "intent_binding_unavailable"
+  ambiguous_rule:
+    expected_error: "intent_rule_ambiguous"
+
+phase1_expected:
+  intent01_explicit_goal_prerequisites:
+    outcome: "resolved"
+    resolution_method: "explicit"
+    matched_goal_ids: ["goal.mindgraph-remodel"]
+    prerequisite_goal_ids:
+      - "goal.route-contract-evaluation"
+      - "goal.intent-schema-validation"
+    intent_path:
+      - "goal.mindgraph-remodel"
+      - "goal.route-contract-evaluation"
+      - "goal.intent-schema-validation"
+    capability_hints:
+      - "capability://fixture-evaluator"
+      - "retriever://mindgraph-projects"
+  intent02_deterministic_alias_resolution:
+    outcome: "resolved"
+    resolution_method: "alias"
+    matched_goal_ids: ["goal.route-contract-evaluation"]
+    prerequisite_goal_ids: []
+    intent_path: ["goal.route-contract-evaluation"]
+    capability_hints: ["capability://fixture-evaluator"]
+  intent03_ambiguous_alias_refusal:
+    outcome: "refusal"
+    reason: "intent_alias_ambiguous"
+  intent04_cycle_refusal:
+    outcome: "refusal"
+    reason: "intent_cycle_detected"
+  intent05_missing_goal_fallback:
+    outcome: "fallback"
+    reason: "intent_no_match"
+  intent06_untrusted_route_hint_rejected:
+    outcome: "resolved"
+    capability_hints: ["retriever://mindgraph-projects"]
+    forbidden_capability_hints: ["retriever://gmail"]
+  intent07_bounded_traversal_truncation:
+    outcome: "resolved"
+    reason: "intent_traversal_truncated"
+    intent_path: ["goal.deep-root", "goal.deep-1", "goal.deep-2"]
