@@ -37,7 +37,7 @@ def mcp_embedder():
 
 @pytest.fixture
 def mcp_db(tmp_path, monkeypatch, mcp_embedder):
-    monkeypatch.setattr(cli, "_load_embedder", lambda: mcp_embedder)
+    monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: mcp_embedder)
 
     notes = tmp_path / "vault"
     notes.mkdir()
@@ -232,7 +232,7 @@ def test_serve_mcp_help_is_registered():
     result = runner.invoke(cli.app, ["serve-mcp", "--help"])
 
     assert result.exit_code == 0
-    assert "--db" in result.stdout
+    assert "-db" in result.stdout
 
 
 def test_serve_mcp_missing_db_exits_cleanly(tmp_path):

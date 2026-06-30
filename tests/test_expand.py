@@ -54,7 +54,7 @@ def expand_embedder():
 @pytest.fixture
 def expand_db(tmp_path, monkeypatch, expand_embedder):
     """Ingest the ABCDE fixture vault."""
-    monkeypatch.setattr(cli, "_load_embedder", lambda: expand_embedder)
+    monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: expand_embedder)
 
     notes = tmp_path / "vault"
     notes.mkdir()
@@ -322,7 +322,7 @@ class TestExpandCLI:
     def test_expand_flag_appends_depth_to_header(
         self, expand_db, expand_embedder, monkeypatch
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: expand_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: expand_embedder)
         runner = CliRunner()
         result = runner.invoke(
             cli.app,
@@ -345,7 +345,7 @@ class TestExpandCLI:
     def test_expand_flag_emits_expansion_depth_in_json(
         self, expand_db, expand_embedder, monkeypatch
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: expand_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: expand_embedder)
         runner = CliRunner()
         result = runner.invoke(
             cli.app,
@@ -376,7 +376,7 @@ class TestExpandCLI:
 
     def test_depth_above_cap_rejected(self, expand_db, expand_embedder, monkeypatch):
         """Hard cap of 3 enforced at the CLI layer."""
-        monkeypatch.setattr(cli, "_load_embedder", lambda: expand_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: expand_embedder)
         runner = CliRunner()
         result = runner.invoke(
             cli.app,

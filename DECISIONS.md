@@ -4,6 +4,84 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-06-19 — Query-time semantic association (MainFrame ADR-034)
+
+**Status:** Accepted; shipped in MainFrame commit `1292c22`.
+
+**Context:** MindGraph uses semantic search for query-to-chunk ranking and
+explicit edges for document-to-document traversal (`--expand`). Cross-domain
+material can co-rank on well-formed queries but have no wikilink path, so
+`--expand` and `graph_neighbors` cannot surface the relationship from one note.
+
+**Decision:** Add an append-only `associated` signal. Starting from fused seed
+documents, embed a per-document association text (title plus primary chunk), run
+vector nearest-neighbor retrieval, promote results to document level, and append
+them with `signal="associated"`, `semantic_distance`, and `weak_fit`. Association
+does not enter RRF fusion. The CLI exposes `--associate`; MCP keeps parameter
+parity. Association runs within one SQLite scope, while Query Station retains
+responsibility for federated grouping.
+
+**Rationale:** This reuses existing chunk embeddings and ranking primitives
+without an offline semantic-edge table or LLM entity extraction. It closes a
+document-to-document discovery gap while keeping each signal inspectable.
+
+**Consequences:** `Signal` includes `associated`. Evaluation owns cross-domain
+probes and latency measurement before association can become a default agent
+workflow. Offline precomputed semantic edges remain deferred.
+
+---
+
+## 2026-06-19 — Hybrid explicit graph and chunk RAG (MainFrame ADR-035)
+
+**Status:** Accepted; shipped in MainFrame commit `1292c22`.
+
+**Context:** After dual-channel link fixes and federation research, MainFrame
+needed to decide whether to replace MindGraph with GraphRAG, a vector-only
+system, learned graph traversal, or a larger embedding model.
+
+**Decision:** Keep the hybrid model as the default: per-scope SQLite with FTS5,
+chunk embeddings, and explicit operator-authored edges; RRF for query-to-chunk
+ranking; bounded graph expansion for explicit relationships; and semantic
+association for implicit document neighborhoods. Do not replace the lifecycle
+indexes with one LLM-extracted graph. Embedding and reranking changes require a
+frozen `mindgraph-eval` comparison before promotion.
+
+**Rationale:** MainFrame needs lifecycle-aware nominations rather than global
+private-corpus answer generation. The current model preserves inspectable
+signals and trust zones while allowing measured, incremental improvements.
+
+**Consequences:** Association precedes embedder migration or community-graph
+experiments. Optional overview layers remain opt-in. Comparative claims stay
+design intent until supported by evaluation.
+
+---
+
+## 2026-06-19 — Dual-channel links and canonical slug resolution (MainFrame ADR-033)
+
+**Status:** Accepted; shipped in MainFrame commit `6fee787`.
+
+**Context:** MainFrame notes declare relationships in both frontmatter `links:`
+and body wikilinks. Authors also use trailing slugs while canonical filenames
+include date, domain, and type prefixes. Indexing only body links and matching
+only full stems left useful relationships sparse or dangling.
+
+**Decision:** `extract_document_graph_edges` indexes frontmatter links and body
+wikilinks, deduplicating by target while preserving a body relationship label
+when present. `LinkResolver` also resolves unique canonical trailing slugs after
+trying scope-relative and sibling paths. Ambiguous slugs remain dangling. Either
+authoring channel is sufficient; knowledge notes must not create project
+wikilinks until an approved bridge registry exists.
+
+**Rationale:** This aligns engine behavior with established MainFrame authoring
+without requiring a corpus-wide rewrite. Existing frontmatter relationships can
+participate in expansion immediately.
+
+**Consequences:** Refreshes can change edge counts even when body text is
+unchanged. Graph-degree baselines must be rerun after refresh. Project bridges
+remain explicit future work.
+
+---
+
 ## 2026-06-19 — Namespaced multi-root ingest and provenance rows
 
 **Decision:** MindGraph keeps ordinary `mindgraph ingest <directory>` backward-compatible with path-derived document IDs, but adds `mindgraph ingest-many <manifest>` for multiple Markdown roots that must be indexed as one logical store. Scoped ingest rows carry `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, and `display_path`. When `index_id` and `namespace` are present, document IDs are derived from `index_id + namespace + source_path`, so repeated filenames such as `README.md` remain distinct across project roots.

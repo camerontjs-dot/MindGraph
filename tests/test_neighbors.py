@@ -16,7 +16,7 @@ class _ZeroEmbedder:
 
 @pytest.fixture
 def fake_embedder(monkeypatch):
-    monkeypatch.setattr(cli, "_load_embedder", lambda: _ZeroEmbedder())
+    monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: _ZeroEmbedder())
 
 
 @pytest.fixture

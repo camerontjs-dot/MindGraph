@@ -3,9 +3,13 @@ import pytest
 from mindgraph.exceptions import ParseError
 from mindgraph.parser import (
     LinkResolver,
+    canonical_trailing_slug,
     chunk_truth,
     compute_doc_id,
+    extract_document_graph_edges,
     extract_graph_edges,
+    extract_metadata_link_targets,
+    normalize_link_label,
     parse_document,
     parse_frontmatter,
     split_page_model,
@@ -215,6 +219,106 @@ class TestExtractGraphEdges:
         )
 
         assert edges[0].target_id == compute_doc_id("missing.md")
+
+    def test_resolves_unique_canonical_trailing_slug(self):
+        docs = [
+            parse_document(
+                "regulated-systems/2026-06-13__regulated-systems__raw__gxp-pharma-source-catalog.md",
+                b"---\ntitle: Catalog\n---\nBody",
+            ),
+            parse_document(
+                "regulated-systems/source.md",
+                b"---\ntitle: Source\n---\nBody",
+            ),
+        ]
+        resolver = LinkResolver.from_documents(docs)
+        edges = extract_graph_edges(
+            "[[gxp-pharma-source-catalog]]",
+            source_id="src",
+            link_resolver=resolver,
+            source_path="regulated-systems/source.md",
+        )
+
+        assert edges[0].target_id == docs[0].id
+
+    def test_ambiguous_trailing_slug_remains_dangling(self):
+        docs = [
+            parse_document(
+                "regulated-systems/2026-06-13__regulated-systems__note__shared-slug.md",
+                b"---\ntitle: One\n---\nBody",
+            ),
+            parse_document(
+                "knowledge-systems/2026-06-14__knowledge-systems__note__shared-slug.md",
+                b"---\ntitle: Two\n---\nBody",
+            ),
+        ]
+        resolver = LinkResolver.from_documents(docs)
+        edges = extract_graph_edges(
+            "[[shared-slug]]",
+            source_id="src",
+            link_resolver=resolver,
+            source_path="regulated-systems/source.md",
+        )
+
+        assert edges[0].target_id == compute_doc_id("shared-slug.md")
+
+
+class TestCanonicalTrailingSlug:
+    def test_extracts_slug_from_canonical_stem(self):
+        stem = "2026-06-13__regulated-systems__raw__gxp-pharma-source-catalog"
+        assert canonical_trailing_slug(stem) == "gxp-pharma-source-catalog"
+
+    def test_non_canonical_stem_returns_none(self):
+        assert canonical_trailing_slug("legacy-short-name") is None
+
+
+class TestMetadataLinks:
+    def test_extract_metadata_link_targets_dedupes(self):
+        metadata = {
+            "links": [
+                "hybrid-memory-in-practice",
+                "[[hybrid-memory-in-practice]]",
+                "data-integrity-alcoa",
+            ]
+        }
+        assert extract_metadata_link_targets(metadata) == [
+            "hybrid-memory-in-practice",
+            "data-integrity-alcoa",
+        ]
+
+    def test_normalize_link_label_strips_wrapper_and_alias(self):
+        assert normalize_link_label("[[target|Display]]") == "target"
+
+
+class TestExtractDocumentGraphEdges:
+    def test_indexes_frontmatter_and_body_without_duplicates(self):
+        docs = [
+            parse_document(
+                "knowledge-systems/2026-06-13__knowledge-systems__note__hybrid-memory-in-practice.md",
+                b"---\ntitle: Hybrid\n---\nBody",
+            ),
+            parse_document(
+                "knowledge-systems/2026-06-04__knowledge-systems__note__knowledge-graph-rag-architecture.md",
+                b"---\ntitle: KG RAG\n---\nBody",
+            ),
+            parse_document(
+                "knowledge-systems/source.md",
+                (
+                    "---\n"
+                    "title: Source\n"
+                    'links: ["hybrid-memory-in-practice", "knowledge-graph-rag-architecture"]\n'
+                    "---\n"
+                    "See also [[hybrid-memory-in-practice]] (extends).\n"
+                ).encode("utf-8"),
+            ),
+        ]
+        resolver = LinkResolver.from_documents(docs)
+        edges = extract_document_graph_edges(docs[2], link_resolver=resolver)
+
+        assert len(edges) == 2
+        assert {edge.target_id for edge in edges} == {docs[0].id, docs[1].id}
+        hybrid_edge = next(edge for edge in edges if edge.target_id == docs[0].id)
+        assert hybrid_edge.relationship_type == "extends"
 
 
 class TestChunkTruth:

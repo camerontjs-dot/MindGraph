@@ -12,7 +12,8 @@ This is the engine I run against Mainframe, my own Markdown knowledge base. Any 
 - Computes a stable document ID from `sha256(relative_path)` for ordinary single-root ingest, or from `index_id + namespace + source_path` for scoped multi-root ingest.
 - Skips re-embedding when the content hash matches an existing row.
 - Chunks the Truth body into paragraphs packed up to `max_chars`, keeping paragraphs whole.
-- Embeds chunks with `sentence-transformers/all-MiniLM-L6-v2` at 384 dimensions.
+- Embeds chunks with a selectable model (`--embedder`: `minilm`, `bge-small`, `e5-small`; default MiniLM) at 384 dimensions per DB.
+- Optional `--embed-template mainframe` prefixes domain/type/title at ingest and `[intent=query]` at query time.
 - Writes documents, chunks, embeddings, FTS5 rows, and edges to one SQLite file with `sqlite-vec` and FTS5 attached.
 
 ## What it ranks
@@ -22,11 +23,13 @@ This is the engine I run against Mainframe, my own Markdown knowledge base. Any 
 - Lexical: FTS5 BM25 over the chunked Truth text
 - Semantic: `sqlite-vec` cosine over `vec_chunks`
 
-Each result carries a `signal` label (`lexical`, `semantic`, `fused`, or `expanded`), a `rrf_score`, and the per-signal `lexical_rank` and `semantic_rank` integers, so the attribution is mechanically verifiable. Ties break by `(doc_id, chunk_index)` lexicographic for deterministic output. Free-text queries pass through an FTS5 sanitizer that strips operator characters and the uppercase keywords `AND`, `OR`, `NOT`, `NEAR`, then OR-joins the surviving tokens.
+Each result carries a `signal` label (`lexical`, `semantic`, `fused`, `expanded`, or `associated`), a `rrf_score`, and the per-signal `lexical_rank` and `semantic_rank` integers, so the attribution is mechanically verifiable. Ties break by `(doc_id, chunk_index)` lexicographic for deterministic output. Free-text queries pass through an FTS5 sanitizer that strips operator characters and the uppercase keywords `AND`, `OR`, `NOT`, `NEAR`, then OR-joins the surviving tokens.
 
 Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
 
-`mindgraph query --expand` adds a third signal as a labeled append. After the fused list returns, the query walks outbound `[[link]]` edges from each fused result to a bounded depth (`--depth N`, default 1, cap 3) and appends walked documents to the result list with `signal = "expanded"` and an `expansion_depth` integer. The walk is outbound only, deduplicates against the fused set, terminates at dangling edges, and does not interact with the RRF math. `--expand-top-k N` (default 20) caps the number of appended expanded rows.
+`mindgraph query --expand` appends graph-walk results. After the fused list returns, the query walks outbound `[[link]]` edges from each fused result to a bounded depth (`--depth N`, default 1, cap 3) and appends walked documents with `signal = "expanded"` and an `expansion_depth` integer. The walk is outbound only, deduplicates against the fused set, terminates at dangling edges, and does not interact with the RRF math. `--expand-top-k N` (default 20) caps appended expanded rows.
+
+`mindgraph query --associate` appends semantic doc-neighbor results (ADR-034). From fused seeds (not expand results), embeds title + chunk excerpt per seed, runs vec kNN, and appends rows with `signal = "associated"`, `association_depth = 1`, and `semantic_distance`. `--associate-top-k` and `--associate-seed-k` cap output and seed count.
 
 `mindgraph neighbors <doc_id>` lists outbound edges for a document, including dangling edges (links to files that do not exist as documents).
 
@@ -35,7 +38,7 @@ Result rows also carry trust and provenance metadata for consumers that need to 
 - There is no LLM generation step. MindGraph retrieves and ranks. It does not write summaries, answers, or explanations.
 - Renaming a file produces a new document ID. The old document remains in the database until a future cleanup pass prunes orphans.
 - Only Markdown is a first-class input. PDFs and other formats are out of scope for this asset.
-- Switching the embedding model requires a schema migration on `vec_chunks` and a re-embed of every chunk. There is no graceful in-place upgrade.
+- Use a **separate SQLite file per embedder** (`--embedder` sets `vec_chunks` dimensions at init). Re-ingest the full scope into each eval DB; do not swap models in-place on one DB.
 - Lexical-only results surface chunk index 0 because there is no semantic ranking to pick a better chunk from. Fused and semantic results surface the best-ranked chunk per document.
 - Retrieval is nomination, not verification. A retrieved chunk is a candidate for a reader to read, not a verified source for any claim.
 
@@ -44,6 +47,7 @@ Result rows also carry trust and provenance metadata for consumers that need to 
 ```bash
 mindgraph init --db mindgraph.sqlite
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite
+mindgraph ingest path/to/your/vault --db mindgraph.sqlite --embedder bge-small --embed-template mainframe
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --verbose
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --index-id mainframe-knowledge --trust-profile durable_knowledge --namespace knowledge --display-prefix 10_knowledge
 mindgraph ingest-many path/to/manifest.json --db mindgraph.sqlite
@@ -51,6 +55,8 @@ mindgraph query "what does this vault say about X" --db mindgraph.sqlite
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json
 mindgraph query "..." --db mindgraph.sqlite --expand
 mindgraph query "..." --db mindgraph.sqlite --expand --depth 2 --expand-top-k 10
+mindgraph query "..." --db mindgraph.sqlite --associate --associate-top-k 10
+mindgraph query "..." --db mindgraph.sqlite --embedder e5-small --embed-template mainframe
 mindgraph neighbors <doc_id> --db mindgraph.sqlite
 mindgraph neighbors <doc_id> --db mindgraph.sqlite --json
 mindgraph serve-mcp --db mindgraph.sqlite
@@ -260,7 +266,7 @@ The stdio transport does not connect directly to claude.ai web. The web product 
 
 MindGraph runs entirely locally. There is no service to start and no remote dependency at retrieval time.
 
-1. **Ingestion.** `parser.parse_document` reads YAML frontmatter, splits Truth from Timeline, and returns a `ParsedDocument`. `parser.extract_graph_edges` walks the Truth text and returns `GraphEdge` records. `parser.chunk_truth` packs paragraphs into bounded chunks.
+1. **Ingestion.** `parser.parse_document` reads YAML frontmatter, splits Truth from Timeline, and returns a `ParsedDocument`. `parser.extract_document_graph_edges` collects `GraphEdge` records from both frontmatter `links:` and body `[[wikilinks]]` (ADR-033). `LinkResolver` resolves unique canonical trailing slugs (`…__slug`) as well as full stems and titles. `parser.chunk_truth` packs paragraphs into bounded chunks.
 2. **Storage.** `db.init_db` creates the schema: `documents`, `documents_fts` (FTS5 over title and Truth content), `chunks`, `vec_chunks` (sqlite-vec, 384-dim), and `edges`. Foreign keys are on.
 3. **Re-ingest.** `db.get_document_hash` compares the stored hash to the freshly computed one. Unchanged files exit before parsing or embedding.
 4. **Retrieval.** `query.fetch_lexical_ranking` runs FTS5 BM25 over `documents_fts`. `query.fetch_semantic_ranking` runs a `sqlite-vec` KNN over `vec_chunks` and promotes to document granularity by keeping the best chunk per document. `query.rrf_fuse` combines the two ranked lists at the canonical `k = 60` and returns deterministic, signal-attributed results.

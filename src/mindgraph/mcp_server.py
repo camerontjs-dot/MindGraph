@@ -14,6 +14,7 @@ from mcp.types import CallToolResult, TextContent
 
 from mindgraph import db
 from mindgraph import query as query_mod
+from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph.exceptions import MindgraphError
 
 REQUIRED_TABLES = {
@@ -64,6 +65,8 @@ def create_server(
     conn: sqlite3.Connection,
     embedder: query_mod.Embedder,
     *,
+    embedder_spec: EmbedderSpec | None = None,
+    embed_template: EmbedTemplate = "none",
     log_level: Literal["DEBUG", "INFO"] = "INFO",
 ) -> FastMCP:
     """Create a FastMCP server bound to one DB connection and one embedder."""
@@ -97,13 +100,21 @@ def create_server(
         expand: bool = False,
         expand_depth: int = query_mod.DEFAULT_EXPAND_DEPTH,
         expand_top_k: int = query_mod.DEFAULT_EXPAND_TOP_K,
+        associate: bool = False,
+        associate_top_k: int = query_mod.DEFAULT_ASSOCIATE_TOP_K,
+        associate_seed_k: int = query_mod.DEFAULT_ASSOCIATE_SEED_K,
     ) -> CallToolResult:
         import time
+        formatted_question = question
+        if embedder_spec is not None:
+            formatted_question = format_query_text(
+                embedder_spec, question, template=embed_template
+            )
         for attempt in range(5):
             try:
                 results = query_mod.run_query(
                     conn,
-                    question,
+                    formatted_question,
                     embedder,
                     lexical_top_k=lexical_top_k,
                     semantic_top_k=semantic_top_k,
@@ -111,6 +122,11 @@ def create_server(
                     expand=expand,
                     expand_depth=expand_depth,
                     expand_top_k=expand_top_k,
+                    associate=associate,
+                    associate_top_k=associate_top_k,
+                    associate_seed_k=associate_seed_k,
+                    embedder_spec=embedder_spec,
+                    embed_template=embed_template,
                 )
                 return _json_result([result.model_dump() for result in results])
             except sqlite3.OperationalError as e:

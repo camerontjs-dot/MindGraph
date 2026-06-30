@@ -12,6 +12,7 @@ import sqlite3
 import struct
 from typing import Protocol
 
+from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph.exceptions import DatabaseError, MindgraphError
 from mindgraph.models import NeighborResult, QueryResult, QueryScopeWarning
 
@@ -366,6 +367,8 @@ def _resolve_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
 
 DEFAULT_EXPAND_DEPTH = 1
 DEFAULT_EXPAND_TOP_K = 20
+DEFAULT_ASSOCIATE_TOP_K = 10
+DEFAULT_ASSOCIATE_SEED_K = 5
 
 
 def run_query(
@@ -379,6 +382,11 @@ def run_query(
     expand: bool = False,
     expand_depth: int = DEFAULT_EXPAND_DEPTH,
     expand_top_k: int = DEFAULT_EXPAND_TOP_K,
+    associate: bool = False,
+    associate_top_k: int = DEFAULT_ASSOCIATE_TOP_K,
+    associate_seed_k: int = DEFAULT_ASSOCIATE_SEED_K,
+    embedder_spec: EmbedderSpec | None = None,
+    embed_template: EmbedTemplate = "none",
 ) -> list[QueryResult]:
     """Run the Phase 2 query pipeline end-to-end and return QueryResult rows.
 
@@ -454,17 +462,129 @@ def run_query(
             )
         )
 
-    if not expand:
-        return results
+    output = list(results)
 
-    expanded = expand_results(
-        conn,
-        results,
-        depth=expand_depth,
-        expand_top_k=expand_top_k,
-        query_scope_warning=query_scope_warning,
+    if expand:
+        output.extend(
+            expand_results(
+                conn,
+                results,
+                depth=expand_depth,
+                expand_top_k=expand_top_k,
+                query_scope_warning=query_scope_warning,
+            )
+        )
+
+    if associate:
+        output.extend(
+            associate_results(
+                conn,
+                results,
+                embedder,
+                top_k=associate_top_k,
+                seed_k=associate_seed_k,
+                embedder_spec=embedder_spec,
+                embed_template=embed_template,
+                query_scope_warning=query_scope_warning,
+            )
+        )
+
+    return output
+
+
+def _association_seed_text(conn: sqlite3.Connection, seed: QueryResult) -> str:
+    chunk = _resolve_chunk_text(conn, seed.doc_id, seed.chunk_index)
+    title = (seed.title or "").strip()
+    excerpt = chunk[:500].strip()
+    if title and excerpt:
+        return f"{title}\n{excerpt}"
+    return title or excerpt
+
+
+def associate_results(
+    conn: sqlite3.Connection,
+    phase_2_results: list[QueryResult],
+    embedder: Embedder,
+    *,
+    top_k: int = DEFAULT_ASSOCIATE_TOP_K,
+    seed_k: int = DEFAULT_ASSOCIATE_SEED_K,
+    embedder_spec: EmbedderSpec | None = None,
+    embed_template: EmbedTemplate = "none",
+    query_scope_warning: QueryScopeWarning | None = None,
+) -> list[QueryResult]:
+    """Find embedding-neighbor documents from Phase 2 fused seeds.
+
+    Seeds are the pre-expand Phase 2 rows only (ADR-034). Association is
+    append-only: rows use signal=associated, rrf_score=0, association_depth=1.
+    """
+    if top_k <= 0 or not phase_2_results:
+        return []
+    if query_scope_warning is None:
+        query_scope_warning = phase_2_results[0].query_scope_warning
+
+    spec = embedder_spec
+    effective_seed_k = min(seed_k, len(phase_2_results)) if seed_k > 0 else 0
+    if effective_seed_k <= 0:
+        return []
+
+    seen: set[str] = {r.doc_id for r in phase_2_results}
+    associated: list[QueryResult] = []
+
+    for seed in phase_2_results[:effective_seed_k]:
+        seed_text = _association_seed_text(conn, seed)
+        if not seed_text:
+            continue
+        if spec is not None:
+            seed_text = format_query_text(spec, seed_text, template=embed_template)
+        raw = _encode_without_progress(embedder, [seed_text])
+        query_embedding = [float(x) for x in raw[0]]
+        semantic = fetch_semantic_ranking(
+            conn, query_embedding, top_k=top_k + len(seen)
+        )
+        for doc_id, chunk_index, _rank, distance in semantic:
+            if doc_id in seen:
+                continue
+            resolved = _resolve_document(conn, doc_id)
+            if resolved is None:
+                continue
+            chunk_text = _resolve_chunk_text(conn, doc_id, chunk_index)
+            associated.append(
+                QueryResult(
+                    doc_id=doc_id,
+                    chunk_index=chunk_index,
+                    path=resolved["path"],
+                    title=resolved["title"],
+                    doc_type=resolved["doc_type"],
+                    domain=resolved["domain"],
+                    status=resolved["status"],
+                    index_id=resolved["index_id"],
+                    trust_profile=resolved["trust_profile"],
+                    namespace=resolved["namespace"],
+                    source_root=resolved["source_root"],
+                    source_path=resolved["source_path"],
+                    display_path=resolved["display_path"],
+                    signal="associated",
+                    rrf_score=0.0,
+                    lexical_rank=None,
+                    semantic_rank=None,
+                    semantic_distance=round(distance, 6),
+                    weak_fit=_is_weak_fit(None, 1, distance),
+                    query_scope_warning=query_scope_warning,
+                    chunk_text=chunk_text,
+                    expansion_depth=0,
+                    association_depth=1,
+                )
+            )
+            seen.add(doc_id)
+            if len(associated) >= top_k:
+                break
+        if len(associated) >= top_k:
+            break
+
+    associated.sort(
+        key=lambda r: (r.association_depth, r.semantic_distance or 0.0, r.doc_id)
     )
-    return results + expanded
+    return associated[:top_k]
 
 
 def expand_results(

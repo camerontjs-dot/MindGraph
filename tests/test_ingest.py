@@ -17,7 +17,7 @@ class FakeEmbedder:
 
 @pytest.fixture
 def fake_embedder(monkeypatch):
-    monkeypatch.setattr(cli, "_load_embedder", lambda: FakeEmbedder())
+    monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: FakeEmbedder())
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Signal = Literal["lexical", "semantic", "fused", "expanded"]
+Signal = Literal["lexical", "semantic", "fused", "expanded", "associated"]
 QueryScopeIntent = Literal["inbox_state", "live_state", "project_status"]
 
 
@@ -71,6 +71,7 @@ class QueryResult(BaseModel):
     query_scope_warning: QueryScopeWarning | None = None
     chunk_text: str
     expansion_depth: int = 0
+    association_depth: int = 0
 
 
 class NeighborResult(BaseModel):

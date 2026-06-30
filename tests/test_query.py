@@ -232,7 +232,7 @@ def keyword_embedder():
 @pytest.fixture
 def vault_db(tmp_path, monkeypatch, keyword_embedder):
     """Ingest a small vault designed to exercise each retrieval signal."""
-    monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+    monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
 
     notes = tmp_path / "vault"
     notes.mkdir()
@@ -391,7 +391,7 @@ class TestRunQuery:
     def test_scoped_ingest_provenance_fields_populated(
         self, tmp_path, monkeypatch, keyword_embedder
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
         notes = tmp_path / "knowledge"
         notes.mkdir()
         (notes / "scoped.md").write_text("The zebra appears in durable knowledge.\n")
@@ -523,7 +523,7 @@ class TestQueryResultMetadata:
     def test_emits_frontmatter_type_domain_status(
         self, tmp_path, monkeypatch, keyword_embedder
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
         notes = tmp_path / "vault"
         notes.mkdir()
         (notes / "typed.md").write_text(
@@ -557,7 +557,7 @@ class TestQueryCLI:
     def test_query_command_runs_text_output(
         self, vault_db, keyword_embedder, monkeypatch
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
         runner = CliRunner()
         result = runner.invoke(
             cli.app, ["query", "zebra", "--db", vault_db, "--top-k", "3"]
@@ -569,7 +569,7 @@ class TestQueryCLI:
     def test_query_command_json_output(
         self, vault_db, keyword_embedder, monkeypatch
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
         runner = CliRunner()
         result = runner.invoke(
             cli.app,
@@ -609,7 +609,7 @@ class TestQueryCLI:
     def test_query_command_text_output_prints_scope_warning(
         self, vault_db, keyword_embedder, monkeypatch
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
         runner = CliRunner()
         result = runner.invoke(
             cli.app,
@@ -629,7 +629,7 @@ class TestQueryCLI:
     def test_query_command_json_output_emits_scope_warning(
         self, vault_db, keyword_embedder, monkeypatch
     ):
-        monkeypatch.setattr(cli, "_load_embedder", lambda: keyword_embedder)
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
         runner = CliRunner()
         result = runner.invoke(
             cli.app,

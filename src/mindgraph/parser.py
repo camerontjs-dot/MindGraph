@@ -18,6 +18,8 @@ TIMELINE_SPLIT_PATTERN = re.compile(
 )
 
 FRONTMATTER_PATTERN = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
+CANONICAL_FILENAME_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}__")
+WIKILINK_WRAPPER_PATTERN = re.compile(r"^\[\[(.+?)\]\]$")
 
 
 def compute_doc_id(relative_path: str) -> str:
@@ -46,6 +48,20 @@ def _normalize_lookup_key(value: str) -> str:
     return value.strip().casefold()
 
 
+def canonical_trailing_slug(stem: str) -> str | None:
+    """Return the trailing slug from a canonical MainFrame filename stem.
+
+    Canonical shape: ``YYYY-MM-DD__domain__type__slug`` (see ADR-033).
+    """
+    if not CANONICAL_FILENAME_PREFIX.match(stem):
+        return None
+    parts = stem.split("__")
+    if len(parts) < 4:
+        return None
+    slug = parts[-1].strip()
+    return slug or None
+
+
 @dataclass
 class LinkResolver:
     """Resolve wikilink labels against documents in one ingest scope."""
@@ -54,6 +70,7 @@ class LinkResolver:
     ids_by_path: dict[str, str] = field(default_factory=dict)
     stems: dict[str, set[str]] = field(default_factory=dict)
     titles: dict[str, set[str]] = field(default_factory=dict)
+    slug_suffixes: dict[str, set[str]] = field(default_factory=dict)
 
     @classmethod
     def from_documents(cls, documents: Iterable[ParsedDocument]) -> "LinkResolver":
@@ -65,10 +82,14 @@ class LinkResolver:
     def add_document(self, doc: ParsedDocument) -> None:
         self.paths.add(doc.path)
         self.ids_by_path[doc.path] = doc.id
-        self.stems.setdefault(_normalize_lookup_key(Path(doc.path).stem), set()).add(
-            doc.path
-        )
+        stem = Path(doc.path).stem
+        self.stems.setdefault(_normalize_lookup_key(stem), set()).add(doc.path)
         self.titles.setdefault(_normalize_lookup_key(doc.title), set()).add(doc.path)
+        trailing_slug = canonical_trailing_slug(stem)
+        if trailing_slug is not None:
+            self.slug_suffixes.setdefault(
+                _normalize_lookup_key(trailing_slug), set()
+            ).add(doc.path)
 
     def doc_id_for_path(self, path: str) -> str | None:
         return self.ids_by_path.get(path)
@@ -93,6 +114,12 @@ class LinkResolver:
         title_matches = self.titles.get(raw_key, set())
         if len(title_matches) == 1:
             return next(iter(title_matches))
+
+        if "/" not in normalized:
+            suffix_key = _normalize_lookup_key(Path(normalized).stem)
+            suffix_matches = self.slug_suffixes.get(suffix_key, set())
+            if len(suffix_matches) == 1:
+                return next(iter(suffix_matches))
 
         return None
 
@@ -128,6 +155,71 @@ def split_page_model(body: str) -> tuple[str, str | None]:
     return truth, (timeline or None)
 
 
+def normalize_link_label(raw: str) -> str:
+    """Normalize a link label from frontmatter or wikilink syntax."""
+    target = raw.strip()
+    if not target:
+        return ""
+    wrapper = WIKILINK_WRAPPER_PATTERN.match(target)
+    if wrapper:
+        target = wrapper.group(1).strip()
+    if "|" in target:
+        target = target.split("|", 1)[0].strip()
+    return target
+
+
+def extract_metadata_link_targets(metadata: dict) -> list[str]:
+    """Return deduplicated link targets from frontmatter ``links:``."""
+    raw_links = metadata.get("links")
+    if raw_links is None:
+        return []
+    if isinstance(raw_links, str):
+        candidates = [raw_links]
+    elif isinstance(raw_links, list):
+        candidates = [str(item) for item in raw_links if item is not None]
+    else:
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        target = normalize_link_label(raw)
+        if not target:
+            continue
+        key = _normalize_lookup_key(target)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(target)
+    return out
+
+
+def _edge_for_target(
+    target_raw: str,
+    source_id: str,
+    *,
+    link_resolver: Callable[[str, str | None], str | None] | LinkResolver | None,
+    source_path: str | None,
+    relationship_type: str | None = None,
+) -> GraphEdge:
+    resolved_path = None
+    resolved_id = None
+    if isinstance(link_resolver, LinkResolver):
+        resolved_path = link_resolver.resolve(target_raw, source_path)
+        if resolved_path is not None:
+            resolved_id = link_resolver.doc_id_for_path(resolved_path)
+    elif link_resolver is not None:
+        resolved_path = link_resolver(target_raw, source_path)
+    target_id = resolved_id or compute_doc_id(
+        resolved_path or _normalize_link_target(target_raw)
+    )
+    return GraphEdge(
+        source_id=source_id,
+        target_id=target_id,
+        relationship_type=relationship_type,
+    )
+
+
 def extract_graph_edges(
     text: str,
     source_id: str,
@@ -139,25 +231,48 @@ def extract_graph_edges(
     edges: list[GraphEdge] = []
     for match in LINK_PATTERN.finditer(text):
         target_raw, relationship = match.groups()
-        resolved_path = None
-        resolved_id = None
-        if isinstance(link_resolver, LinkResolver):
-            resolved_path = link_resolver.resolve(target_raw, source_path)
-            if resolved_path is not None:
-                resolved_id = link_resolver.doc_id_for_path(resolved_path)
-        elif link_resolver is not None:
-            resolved_path = link_resolver(target_raw, source_path)
-        target_id = resolved_id or compute_doc_id(
-            resolved_path or _normalize_link_target(target_raw)
-        )
         edges.append(
-            GraphEdge(
-                source_id=source_id,
-                target_id=target_id,
+            _edge_for_target(
+                target_raw,
+                source_id,
+                link_resolver=link_resolver,
+                source_path=source_path,
                 relationship_type=relationship.strip() if relationship else None,
             )
         )
     return edges
+
+
+def extract_document_graph_edges(
+    parsed: ParsedDocument,
+    *,
+    link_resolver: Callable[[str, str | None], str | None] | LinkResolver | None = None,
+) -> list[GraphEdge]:
+    """Collect graph edges from frontmatter ``links:`` and body wikilinks."""
+    by_target: dict[str, GraphEdge] = {}
+
+    for target in extract_metadata_link_targets(parsed.metadata):
+        edge = _edge_for_target(
+            target,
+            parsed.id,
+            link_resolver=link_resolver,
+            source_path=parsed.path,
+        )
+        by_target.setdefault(edge.target_id, edge)
+
+    for edge in extract_graph_edges(
+        parsed.truth_text,
+        parsed.id,
+        link_resolver=link_resolver,
+        source_path=parsed.path,
+    ):
+        existing = by_target.get(edge.target_id)
+        if existing is None:
+            by_target[edge.target_id] = edge
+        elif existing.relationship_type is None and edge.relationship_type is not None:
+            by_target[edge.target_id] = edge
+
+    return list(by_target.values())
 
 
 # Sentence boundary: whitespace that follows `.`, `!`, or `?`.

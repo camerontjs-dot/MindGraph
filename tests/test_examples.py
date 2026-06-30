@@ -87,7 +87,7 @@ def example_db(tmp_path, monkeypatch, example_embedder):
     Copying into tmp_path keeps the test self-contained and matches the
     cli._ingest_directory contract (reads from a real directory tree).
     """
-    monkeypatch.setattr(cli, "_load_embedder", lambda: example_embedder)
+    monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: example_embedder)
 
     vault_copy = tmp_path / "example-vault"
     shutil.copytree(EXAMPLE_VAULT_DIR, vault_copy)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from mindgraph import db, mcp_server, parser
+from mindgraph import db, embedders, mcp_server, parser
 from mindgraph import query as query_mod
 from mindgraph.exceptions import IngestionError, MindgraphError
 
@@ -46,11 +46,10 @@ def _configure_logging(verbose: bool) -> None:
         )
 
 
-def _load_embedder():
-    from sentence_transformers import SentenceTransformer
-
-    logger.info("Loading embedding model (all-MiniLM-L6-v2)...")
-    return SentenceTransformer("all-MiniLM-L6-v2")
+def _load_embedder(embedder: str | None = None):
+    spec = embedders.resolve_embedder(embedder)
+    logger.info("Loading embedding model (%s)...", spec.model_id)
+    return embedders.load_sentence_embedder(spec)
 
 
 def _encode_without_progress(embedder, texts):
@@ -141,7 +140,13 @@ def _doc_id_for_scope_file(scope: IngestScope, source_path: str) -> str:
     return parser.compute_doc_id(source_path)
 
 
-def _ingest_scopes(scopes: list[IngestScope], db_path: str) -> dict[str, int]:
+def _ingest_scopes(
+    scopes: list[IngestScope],
+    db_path: str,
+    *,
+    embedder: str | None = None,
+    embed_template: str | None = None,
+) -> dict[str, int]:
     stats = {"total": 0, "ingested": 0, "skipped": 0, "pruned": 0, "failed": 0}
     scope_files: list[tuple[IngestScope, Path]] = []
     for scope in scopes:
@@ -154,7 +159,9 @@ def _ingest_scopes(scopes: list[IngestScope], db_path: str) -> dict[str, int]:
         logger.warning("No markdown files found in ingest scope(s)")
         return stats
 
-    conn = db.init_db(db_path)
+    spec = embedders.resolve_embedder(embedder)
+    template = embedders.resolve_embed_template(embed_template)
+    conn = db.init_db(db_path, embedding_dims=spec.dimensions)
     model = None
     parsed_docs: list[tuple[Path, parser.ParsedDocument]] = []
 
@@ -181,11 +188,9 @@ def _ingest_scopes(scopes: list[IngestScope], db_path: str) -> dict[str, int]:
         for md_file, parsed in parsed_docs:
             relative_path = parsed.path
             try:
-                edges = parser.extract_graph_edges(
-                    parsed.truth_text,
-                    parsed.id,
+                edges = parser.extract_document_graph_edges(
+                    parsed,
                     link_resolver=link_resolver,
-                    source_path=parsed.path,
                 )
 
                 existing_hash = db.get_document_hash(conn, parsed.id)
@@ -209,8 +214,19 @@ def _ingest_scopes(scopes: list[IngestScope], db_path: str) -> dict[str, int]:
                 embeddings: list[list[float]] = []
                 if chunks:
                     if model is None:
-                        model = _load_embedder()
-                    raw = _encode_without_progress(model, chunks)
+                        model = _load_embedder(embedder)
+                    encode_chunks = [
+                        embedders.format_passage_text(
+                            spec,
+                            chunk,
+                            template=template,
+                            title=parsed.title,
+                            domain=parsed.metadata.get("domain"),
+                            doc_type=parsed.metadata.get("type"),
+                        )
+                        for chunk in chunks
+                    ]
+                    raw = _encode_without_progress(model, encode_chunks)
                     embeddings = [row.tolist() for row in raw]
 
                 with conn:
@@ -269,6 +285,8 @@ def _ingest_directory(
     display_prefix: str | None = None,
     include_globs: tuple[str, ...] | None = None,
     exclude_globs: tuple[str, ...] | None = None,
+    embedder: str | None = None,
+    embed_template: str | None = None,
 ) -> dict[str, int]:
     return _ingest_scopes(
         [
@@ -284,6 +302,8 @@ def _ingest_directory(
             )
         ],
         db_path,
+        embedder=embedder,
+        embed_template=embed_template,
     )
 
 
@@ -361,13 +381,24 @@ def _load_ingest_manifest(manifest_path: Path) -> list[IngestScope]:
 @app.command()
 def init(
     db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
+    embedder: str | None = typer.Option(
+        None,
+        "--embedder",
+        help="Embedder key (minilm, bge-small, e5-small). Sets vec_chunks dimensions.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Initialize the MindGraph database."""
     _configure_logging(verbose)
     try:
-        db.init_db(db_path).close()
-        logger.info("Initialized database at %s", db_path)
+        spec = embedders.resolve_embedder(embedder)
+        db.init_db(db_path, embedding_dims=spec.dimensions).close()
+        logger.info(
+            "Initialized database at %s (embedding_dims=%d, embedder=%s)",
+            db_path,
+            spec.dimensions,
+            spec.key,
+        )
     except MindgraphError as e:
         logger.error(str(e))
         raise typer.Exit(code=1)
@@ -394,6 +425,16 @@ def ingest(
     display_prefix: str | None = typer.Option(
         None, "--display-prefix", help="Path prefix shown to query clients."
     ),
+    embedder: str | None = typer.Option(
+        None,
+        "--embedder",
+        help="Embedder key (minilm, bge-small, e5-small) or MINDGRAPH_EMBEDDER env.",
+    ),
+    embed_template: str | None = typer.Option(
+        None,
+        "--embed-template",
+        help="Optional passage/query template (none, mainframe).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Ingest a directory of markdown files."""
@@ -407,6 +448,8 @@ def ingest(
             namespace=namespace,
             source_root=source_root,
             display_prefix=display_prefix,
+            embedder=embedder,
+            embed_template=embed_template,
         )
         logger.info(
             "Done. total=%d ingested=%d skipped=%d pruned=%d failed=%d",
@@ -434,13 +477,28 @@ def ingest_many(
         "--allow-failures",
         help="Keep a partial index when some files fail to parse or ingest.",
     ),
+    embedder: str | None = typer.Option(
+        None,
+        "--embedder",
+        help="Embedder key (minilm, bge-small, e5-small) or MINDGRAPH_EMBEDDER env.",
+    ),
+    embed_template: str | None = typer.Option(
+        None,
+        "--embed-template",
+        help="Optional passage/query template (none, mainframe).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Ingest multiple markdown roots from a JSON manifest as one index."""
     _configure_logging(verbose)
     try:
         scopes = _load_ingest_manifest(manifest)
-        stats = _ingest_scopes(scopes, db_path)
+        stats = _ingest_scopes(
+            scopes,
+            db_path,
+            embedder=embedder,
+            embed_template=embed_template,
+        )
         logger.info(
             "Done. scopes=%d total=%d ingested=%d skipped=%d pruned=%d failed=%d",
             len(scopes),
@@ -561,6 +619,31 @@ def query(
         "--expand-top-k",
         help="Cap on the number of appended expanded results.",
     ),
+    associate: bool = typer.Option(
+        False,
+        "--associate",
+        help="Append semantic doc-neighbor matches from fused seeds (ADR-034).",
+    ),
+    associate_top_k: int = typer.Option(
+        query_mod.DEFAULT_ASSOCIATE_TOP_K,
+        "--associate-top-k",
+        help="Cap on appended associated results.",
+    ),
+    associate_seed_k: int = typer.Option(
+        query_mod.DEFAULT_ASSOCIATE_SEED_K,
+        "--associate-seed-k",
+        help="How many fused rows seed association (default min(5, top-k)).",
+    ),
+    embedder: str | None = typer.Option(
+        None,
+        "--embedder",
+        help="Embedder key (minilm, bge-small, e5-small) or MINDGRAPH_EMBEDDER env.",
+    ),
+    embed_template: str | None = typer.Option(
+        None,
+        "--embed-template",
+        help="Optional query template (none, mainframe).",
+    ),
     as_json: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of text."
     ),
@@ -568,7 +651,7 @@ def query(
 ):
     """Run a fused lexical + semantic query against an ingested database.
 
-    Pass --expand to also append outbound-graph-walk matches with signal=expanded.
+    Pass --expand for graph BFS matches; --associate for semantic doc neighbors.
     """
     _configure_logging(verbose)
     try:
@@ -577,17 +660,27 @@ def query(
         logger.error(str(e))
         raise typer.Exit(code=1)
     try:
-        embedder = _load_embedder()
+        spec = embedders.resolve_embedder(embedder)
+        template = embedders.resolve_embed_template(embed_template)
+        model = _load_embedder(spec.key)
+        formatted_question = embedders.format_query_text(
+            spec, question, template=template
+        )
         results = query_mod.run_query(
             conn,
-            question,
-            embedder,
+            formatted_question,
+            model,
             lexical_top_k=lexical_top_k,
             semantic_top_k=semantic_top_k,
             final_top_k=final_top_k,
             expand=expand,
             expand_depth=expand_depth,
             expand_top_k=expand_top_k,
+            associate=associate,
+            associate_top_k=associate_top_k,
+            associate_seed_k=associate_seed_k,
+            embedder_spec=spec,
+            embed_template=template,
         )
     except MindgraphError as e:
         logger.error(str(e))
@@ -658,6 +751,16 @@ def neighbors(
 @app.command("serve-mcp")
 def serve_mcp(
     db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
+    embedder: str | None = typer.Option(
+        None,
+        "--embedder",
+        help="Embedder key (minilm, bge-small, e5-small) or MINDGRAPH_EMBEDDER env.",
+    ),
+    embed_template: str | None = typer.Option(
+        None,
+        "--embed-template",
+        help="Optional query template (none, mainframe).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Start a stdio MCP server for one ingested MindGraph database."""
@@ -665,10 +768,14 @@ def serve_mcp(
     conn = None
     try:
         conn = mcp_server.open_database(db_path)
-        embedder = _load_embedder()
+        spec = embedders.resolve_embedder(embedder)
+        template = embedders.resolve_embed_template(embed_template)
+        model = _load_embedder(spec.key)
         server = mcp_server.create_server(
             conn,
-            embedder,
+            model,
+            embedder_spec=spec,
+            embed_template=template,
             log_level="DEBUG" if verbose else "INFO",
         )
         mcp_server.run_stdio(server)

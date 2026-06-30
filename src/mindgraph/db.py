@@ -32,11 +32,22 @@ def get_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
         raise DatabaseError(f"Failed to open database at {db_path}: {e}") from e
 
 
-def init_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
+DEFAULT_EMBEDDING_DIMS = 384
+
+
+def init_db(
+    db_path: str = "mindgraph.sqlite", *, embedding_dims: int = DEFAULT_EMBEDDING_DIMS
+) -> sqlite3.Connection:
     """Initialize the database schema for MindGraph."""
     conn = get_db(db_path)
 
     with conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS index_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
@@ -76,12 +87,31 @@ def init_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
             )
         """)
 
-        # 384 dimensions for all-MiniLM-L6-v2
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
-                embedding float[384]
+        vec_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vec_chunks'"
+        ).fetchone()
+        stored_dims = get_embedding_dims(conn)
+        if stored_dims is None:
+            if vec_exists:
+                stored_dims = DEFAULT_EMBEDDING_DIMS
+            else:
+                stored_dims = embedding_dims
+            set_embedding_dims(conn, stored_dims)
+        elif stored_dims != embedding_dims:
+            raise DatabaseError(
+                f"Database {db_path} was initialized with embedding_dims="
+                f"{stored_dims}; requested {embedding_dims}. Use a separate DB "
+                "per embedder dimension."
             )
-        """)
+
+        if not vec_exists:
+            conn.execute(
+                f"""
+                CREATE VIRTUAL TABLE vec_chunks USING vec0(
+                    embedding float[{stored_dims}]
+                )
+                """
+            )
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS edges (
@@ -93,6 +123,28 @@ def init_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
         """)
 
     return conn
+
+
+def get_embedding_dims(conn: sqlite3.Connection) -> int | None:
+    row = conn.execute(
+        "SELECT value FROM index_meta WHERE key = 'embedding_dims'"
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return None
+
+
+def set_embedding_dims(conn: sqlite3.Connection, dims: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO index_meta (key, value) VALUES ('embedding_dims', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(dims),),
+    )
 
 
 def _ensure_document_provenance_columns(conn: sqlite3.Connection) -> None:
