@@ -4,6 +4,57 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-06-30 — Additive deterministic router core and grouped retrieval envelope
+
+**Status:** Accepted for the first Phase 3 implementation gate in the
+workbench. Operational intent installation and MainFrame integration remain
+deferred.
+
+**Context:** Phase 2 provides a deterministic, read-only `IntentResolution`,
+while the shipped document engine still requires callers to choose one SQLite
+store. Phase 3 needs a model-independent policy layer over the existing durable
+and project query paths without changing their ranking or the legacy CLI/MCP
+response list.
+
+**Decision:** Add strict versioned route, policy, registry, batch, failure, and
+envelope contracts in a separate routing module. The MindGraph package owns the
+generic deterministic decision and orchestration primitives. MainFrame callers
+own database paths, retriever registrations, allowed capabilities, refusal
+rules, and policy versions.
+
+An intent capability hint is a nomination only. It cannot bypass the caller
+allowlist, registry availability, or refusal policy. Explicit durable, project,
+and permitted two-store federated modes are safe scopes. Automatic mode may use
+one configured safe default, but it never widens a no-match, ambiguous, invalid,
+or unavailable intent to every retriever. An unavailable requested capability
+is reported rather than silently replaced.
+
+Each registered retriever returns its unchanged local `QueryResult` order. The
+envelope wraps rows with local ranks and groups them by retriever/trust profile;
+it never compares or normalizes scores across stores. Retriever failures are
+isolated and visible, including when every selected retriever fails.
+
+The existing query pipeline is wrapped through a read-only SQLite connection
+that loads sqlite-vec and enables `query_only`; it does not call the current
+`db.get_db` helper because that helper can persist WAL/schema changes. The
+library orchestration API is additive. Existing `mindgraph query`, neighbors,
+and MCP behavior remain unchanged.
+
+**Consequences:** Phase 3 can measure routing and grouping over the two shipped
+retrievers before installing an operational graph. Synchronous timeout values
+are traceable budget hints, not cancellation guarantees. No model classifier,
+concurrency layer, retry loop, live/structured/episodic/Gmail retriever,
+operational intent database, root promotion, or workstation surface is added in
+this gate.
+
+**Rejected alternatives:** putting policy only in workstation; merging the two
+document stores; globally reranking result rows; treating hints as authority;
+querying both stores after ambiguity; registering future placeholders as
+available; changing the legacy result shape; or claiming synchronous timeout
+cancellation that the runtime cannot enforce.
+
+---
+
 ## 2026-06-29 — Separate V1 intent graph compiler and read-only traversal
 
 **Status:** Accepted for Phase 2 implementation in the workbench. Runtime

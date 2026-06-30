@@ -1,0 +1,59 @@
+policy:
+  policy_version: "mainframe.router-v1"
+  durable_retriever_id: "mindgraph-durable"
+  project_retriever_id: "mindgraph-projects"
+  allow_federated: true
+  safe_default_retriever_id: "mindgraph-durable"
+  refusal_rules:
+    - rule_id: "privacy.raw-transcript"
+      reason_code: "raw_transcripts_not_in_default_retrieval"
+      phrases:
+        - "raw session transcript"
+        - "raw transcript"
+
+requests:
+  explicit_durable:
+    request:
+      query_id: "route.explicit-durable"
+      query_text: "Explain option exercise and assignment."
+      mode: "durable"
+    expected_outcome: "selected"
+    expected_retrievers: ["mindgraph-durable"]
+    expected_reason: "explicit_durable_scope"
+
+  explicit_projects:
+    request:
+      query_id: "route.explicit-projects"
+      query_text: "What is the next approved implementation slice?"
+      mode: "projects"
+    expected_outcome: "selected"
+    expected_retrievers: ["mindgraph-projects"]
+    expected_reason: "explicit_project_scope"
+
+  explicit_federated:
+    request:
+      query_id: "route.explicit-federated"
+      query_text: "Plan using durable methods and project status."
+      mode: "federated"
+    expected_outcome: "selected"
+    expected_retrievers: ["mindgraph-durable", "mindgraph-projects"]
+    expected_reason: "explicit_federated_scope"
+
+  automatic_project_hint:
+    request:
+      query_id: "route.auto-project"
+      query_text: "Project status review"
+      mode: "auto"
+      allowed_capability_refs: ["retriever://mindgraph-projects"]
+    expected_outcome: "selected"
+    expected_retrievers: ["mindgraph-projects"]
+    expected_reason: "intent_capability_hint"
+
+  raw_transcript_refusal:
+    request:
+      query_id: "route.raw-transcript"
+      query_text: "Search every raw session transcript for the exact prompt."
+      mode: "durable"
+    expected_outcome: "refusal"
+    expected_retrievers: []
+    expected_reason: "raw_transcripts_not_in_default_retrieval"
