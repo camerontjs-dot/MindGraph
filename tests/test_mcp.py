@@ -2,12 +2,14 @@ import json as jsonlib
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from mindgraph import cli, db, parser
 from mindgraph import mcp_server
+from mindgraph.intent import compile_intent_corpus
 from mindgraph.query import list_neighbors, run_query
 from tests.test_query import KeywordEmbedder
 
@@ -78,6 +80,35 @@ def mcp_runtime(mcp_db, mcp_embedder):
         conn.close()
 
 
+@pytest.fixture
+def mcp_intent_db(tmp_path):
+    fixture = Path(__file__).parent / "fixtures" / "intent_graph_cases.yaml"
+    catalog = yaml.safe_load(fixture.read_text(encoding="utf-8"))
+    source = tmp_path / "intent-source"
+    source.mkdir()
+    (source / "mainframe-core.yaml").write_text(
+        yaml.safe_dump(catalog["documents"]["phase1"], sort_keys=False),
+        encoding="utf-8",
+    )
+    destination = tmp_path / "intent.sqlite"
+    compile_intent_corpus(source, destination)
+    return destination
+
+
+@pytest.fixture
+def mcp_runtime_with_intent(mcp_db, mcp_embedder, mcp_intent_db):
+    conn = mcp_server.open_database(mcp_db)
+    server = mcp_server.create_server(
+        conn,
+        mcp_embedder,
+        intent_db_path=str(mcp_intent_db),
+    )
+    try:
+        yield server, conn
+    finally:
+        conn.close()
+
+
 def _tool_json(result):
     assert result.isError is False
     assert len(result.content) == 1
@@ -130,6 +161,38 @@ async def test_query_tool_shape_matches_cli_json_surface(mcp_runtime, mcp_embedd
         )
     ]
     assert tool_rows == expected
+
+
+@pytest.mark.anyio
+async def test_query_tool_envelope_includes_intent_and_routing_metadata(
+    mcp_runtime_with_intent,
+):
+    server, _conn = mcp_runtime_with_intent
+
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.call_tool(
+            "query",
+            {
+                "question": "Run the route contract checks.",
+                "final_top_k": 3,
+                "envelope": True,
+            },
+        )
+
+    payload = _tool_json(result)
+    assert set(payload) == {"schema_version", "intent_resolution", "routing", "results"}
+    assert payload["schema_version"] == "1"
+    assert payload["intent_resolution"]["graph_id"] == "mainframe.core"
+    assert payload["intent_resolution"]["graph_version"] == "2026-06-29.1"
+    assert payload["intent_resolution"]["outcome"] == "resolved"
+    assert payload["intent_resolution"]["method"] == "alias"
+    assert payload["intent_resolution"]["matched_goals"] == [
+        "goal.route-contract-evaluation"
+    ]
+    assert payload["routing"]["mode"] == "single_database"
+    assert payload["routing"]["selected_retrievers"] == ["mcp-bound-db"]
+    assert payload["routing"]["reason_codes"] == ["intent_resolved"]
+    assert isinstance(payload["results"], list)
 
 
 @pytest.mark.anyio

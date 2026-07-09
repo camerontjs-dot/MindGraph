@@ -10,6 +10,8 @@ import typer
 from mindgraph import db, embedders, mcp_server, parser
 from mindgraph import query as query_mod
 from mindgraph.exceptions import IngestionError, MindgraphError
+from mindgraph import intent as intent_mod
+from mindgraph import routing as routing_mod
 
 app = typer.Typer(
     name="mindgraph",
@@ -647,11 +649,25 @@ def query(
     as_json: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of text."
     ),
+    envelope: bool = typer.Option(
+        False,
+        "--envelope",
+        help="With --json, emit intent metadata plus results instead of the legacy result list.",
+    ),
+    no_intent: bool = typer.Option(
+        False, "--no-intent", help="Skip intent graph resolution."
+    ),
+    intent_db: str = typer.Option(
+        "~/.mindgraph/mainframe-intent.sqlite", "--intent-db", help="Path to intent graph DB for resolution."
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Run a fused lexical + semantic query against an ingested database.
 
     Pass --expand for graph BFS matches; --associate for semantic doc neighbors.
+    Pass --envelope with --json to include intent graph resolution metadata.
+    Plain --json preserves the legacy result-list contract for existing callers.
+    Text output still shows intent resolution by default. Use --no-intent to skip.
     """
     _configure_logging(verbose)
     try:
@@ -692,9 +708,73 @@ def query(
         except Exception:  # noqa: BLE001
             pass
 
+    resolution = None
+    if not no_intent and (envelope or not as_json):
+        intent_path = os.path.expanduser(intent_db)
+        intent_conn = None
+        if os.path.exists(intent_path):
+            try:
+                intent_conn = intent_mod.open_intent_store(intent_path)
+            except Exception as exc:
+                logger.warning("Failed to open intent DB: %s", exc)
+        if intent_conn:
+            try:
+                resolution = intent_mod.resolve_intent(
+                    intent_conn,
+                    formatted_question,
+                    limits=intent_mod.TraversalLimits(max_depth=2, max_nodes=32),
+                )
+            finally:
+                try:
+                    intent_conn.close()
+                except Exception:
+                    pass
+
     if as_json:
-        typer.echo(json.dumps([r.model_dump() for r in results], indent=2))
+        if envelope:
+            # Match MCP envelope shape so CLI and tool callers share one parser.
+            if resolution is not None:
+                resolution_payload = mcp_server._intent_resolution_payload(resolution)
+                reason = "intent_resolved"
+                warnings = list(resolution.warnings)
+            else:
+                intent_path = Path(os.path.expanduser(intent_db))
+                if intent_path.exists():
+                    reason = "intent_resolution_skipped_or_failed"
+                    warnings = ["intent_resolution_unavailable"]
+                else:
+                    reason = "intent_store_missing"
+                    warnings = []
+                resolution_payload = None
+            out = {
+                "schema_version": routing_mod.SCHEMA_VERSION,
+                "intent_resolution": resolution_payload,
+                "routing": {
+                    "mode": "single_database",
+                    "selected_retrievers": ["cli-bound-db"],
+                    "reason_codes": [reason],
+                    "warnings": warnings,
+                },
+                "results": [r.model_dump() for r in results],
+            }
+        else:
+            out = [r.model_dump() for r in results]
+        typer.echo(json.dumps(out, indent=2, default=str))
         return
+
+    if resolution:
+        typer.echo("=== Intent Resolution from graph ===")
+        typer.echo(f"graph: {resolution.graph_id}@{resolution.graph_version}")
+        typer.echo(f"outcome: {resolution.outcome} (method: {resolution.resolution_method})")
+        if resolution.matched_goal_ids:
+            typer.echo(f"matched goals: {list(resolution.matched_goal_ids)}")
+        if resolution.capability_hints:
+            typer.echo(f"hints: {list(resolution.capability_hints)}")
+        if resolution.warnings:
+            typer.echo(f"warnings: {list(resolution.warnings)}")
+        typer.echo("--- results below ---")
+    elif not no_intent:
+        typer.echo("(no intent DB or resolution; legacy results)")
 
     warning = query_mod.classify_query_scope(question)
     if warning is not None:
@@ -761,6 +841,11 @@ def serve_mcp(
         "--embed-template",
         help="Optional query template (none, mainframe).",
     ),
+    intent_db: str = typer.Option(
+        "~/.mindgraph/mainframe-intent.sqlite",
+        "--intent-db",
+        help="Path to intent graph DB used for MCP query envelope metadata.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Start a stdio MCP server for one ingested MindGraph database."""
@@ -776,6 +861,7 @@ def serve_mcp(
             model,
             embedder_spec=spec,
             embed_template=template,
+            intent_db_path=intent_db,
             log_level="DEBUG" if verbose else "INFO",
         )
         mcp_server.run_stdio(server)

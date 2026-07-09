@@ -53,6 +53,7 @@ mindgraph ingest path/to/your/vault --db mindgraph.sqlite --index-id mainframe-k
 mindgraph ingest-many path/to/manifest.json --db mindgraph.sqlite
 mindgraph query "what does this vault say about X" --db mindgraph.sqlite
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json
+mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json --envelope
 mindgraph query "..." --db mindgraph.sqlite --expand
 mindgraph query "..." --db mindgraph.sqlite --expand --depth 2 --expand-top-k 10
 mindgraph query "..." --db mindgraph.sqlite --associate --associate-top-k 10
@@ -243,7 +244,7 @@ Claude Code, Claude Desktop, Cursor, Cline, and other stdio-MCP-aware local clie
 
 ### Tools
 
-`query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, and `expand_top_k`. The MCP response content is a JSON array of `QueryResult` records. In a smoke run against the example vault, this call matched the CLI JSON output exactly:
+`query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, `expand_top_k`, `associate`, `associate_top_k`, `associate_seed_k`, and `envelope`. By default, the MCP response content is a JSON array of `QueryResult` records. With `envelope=true` (or CLI `--json --envelope`), it returns an object containing `schema_version`, `intent_resolution`, `routing`, and `results`; legacy list output remains unchanged when the flag is omitted. `routing` is single-database metadata for the bound index (not multi-index federation). In a smoke run against the example vault, the default list path matched the CLI JSON output exactly:
 
 ```json
 {
@@ -285,7 +286,7 @@ The expand test suite (`tests/test_expand.py`) covers one-hop walk, two-hop walk
 
 The examples test suite (`tests/test_examples.py`) ingests the committed `examples/example-vault/` into a temp database with the same deterministic `KeywordEmbedder` and asserts each retrieval path: the unique lexical keyword lands on the expected doc, the semantic-only synonym path lands on `bounded-rationality.md` with `signal=semantic`, the fused query lands on `balancing-loops.md`, the dangling edge from `systems-archetypes.md` is preserved by `list_neighbors`, and the depth-2 expansion topology reaches the expected docs and skips the dangling target.
 
-The MCP test suite (`tests/test_mcp.py`) uses the official Python MCP SDK's in-memory client plus the deterministic `KeywordEmbedder` stub. It asserts server startup, missing-DB startup failure, `query` and `graph_neighbors` output shape parity with CLI JSON, expansion parameter routing, dangling-edge preservation, and a clean tool error for unknown `doc_id` values.
+The MCP test suite (`tests/test_mcp.py`) uses the official Python MCP SDK's in-memory client plus the deterministic `KeywordEmbedder` stub. It asserts server startup, missing-DB startup failure, `query` and `graph_neighbors` output shape parity with CLI JSON, opt-in envelope metadata, expansion parameter routing, dangling-edge preservation, and a clean tool error for unknown `doc_id` values.
 
 Run the full suite from the asset root:
 

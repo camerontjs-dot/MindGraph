@@ -1,10 +1,13 @@
 import json as jsonlib
+from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from mindgraph import cli, db, parser
+from mindgraph.intent import compile_intent_corpus
 from mindgraph.models import QueryResult
 from mindgraph.query import (
     RRF_K,
@@ -605,6 +608,59 @@ class TestQueryCLI:
                 "chunk_text",
             ):
                 assert field in row
+
+    def test_query_command_json_envelope_output(
+        self, tmp_path, vault_db, keyword_embedder, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
+        fixture = Path(__file__).parent / "fixtures" / "intent_graph_cases.yaml"
+        catalog = yaml.safe_load(fixture.read_text(encoding="utf-8"))
+        source = tmp_path / "intent-source"
+        source.mkdir()
+        (source / "mainframe-core.yaml").write_text(
+            yaml.safe_dump(catalog["documents"]["phase1"], sort_keys=False),
+            encoding="utf-8",
+        )
+        intent_db = tmp_path / "intent.sqlite"
+        compile_intent_corpus(source, intent_db)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.app,
+            [
+                "query",
+                "Run the route contract checks.",
+                "--db",
+                vault_db,
+                "--json",
+                "--envelope",
+                "--intent-db",
+                str(intent_db),
+                "--top-k",
+                "3",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = jsonlib.loads(result.stdout)
+        assert set(data) == {
+            "schema_version",
+            "intent_resolution",
+            "routing",
+            "results",
+        }
+        assert data["schema_version"] == "1"
+        assert data["intent_resolution"]["graph_id"] == "mainframe.core"
+        assert data["intent_resolution"]["graph_version"] == "2026-06-29.1"
+        assert data["intent_resolution"]["outcome"] == "resolved"
+        assert data["intent_resolution"]["method"] == "alias"
+        assert data["intent_resolution"]["matched_goals"] == [
+            "goal.route-contract-evaluation"
+        ]
+        assert data["routing"]["mode"] == "single_database"
+        assert data["routing"]["selected_retrievers"] == ["cli-bound-db"]
+        assert data["routing"]["reason_codes"] == ["intent_resolved"]
+        assert isinstance(data["results"], list)
 
     def test_query_command_text_output_prints_scope_warning(
         self, vault_db, keyword_embedder, monkeypatch

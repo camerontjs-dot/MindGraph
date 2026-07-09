@@ -4,6 +4,55 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-07-08 — Opt-in CLI/MCP envelope with legacy list compatibility
+
+**Status:** Accepted. Workbench reconciled with root operational package on
+2026-07-09 (union merge: envelope + workbench-only pruning tests retained).
+
+**Context:** The promoted root package gained intent-resolution code before the
+transport contract was finished. An intermediate state returned an object
+envelope from plain `--json`, which broke existing CLI callers and tests that
+depend on the long-standing JSON array of `QueryResult` records. The MCP tool
+also accepted `envelope=true` but discarded the intent metadata and still
+returned the legacy list.
+
+**Decision:** Preserve the legacy list as the default machine-readable surface.
+`mindgraph query --json` returns a JSON array of `QueryResult` rows. Callers
+that want intent metadata must opt in with `--json --envelope` (CLI) or
+`envelope=true` (MCP). Both surfaces share one envelope shape:
+
+```json
+{
+  "schema_version": "1",
+  "intent_resolution": { "...": "..." },
+  "routing": {
+    "mode": "single_database",
+    "selected_retrievers": ["cli-bound-db | mcp-bound-db"],
+    "reason_codes": ["intent_resolved | intent_store_missing | ..."],
+    "warnings": []
+  },
+  "results": []
+}
+```
+
+`--no-intent` suppresses resolution for text/envelope paths. The stdio server
+accepts `--intent-db` so tests and operators can bind envelope metadata to a
+specific compiled intent graph instead of relying only on the home default.
+`routing` here is single-database metadata for the bound index, not multi-index
+federation.
+
+**Consequences:** Existing CLI and MCP integrations continue to parse list
+output without change. Query Station and future trace clients have an explicit
+envelope path for intent/routing metadata. This decision does not install a new
+operational intent graph, merge retrieval databases, change ranking, or approve
+workstation trace UI work.
+
+**Rejected alternatives:** Returning envelopes by default; hiding intent
+metadata inside individual result rows; making MCP envelope support a no-op;
+or removing `--no-intent` from the compatibility contract.
+
+---
+
 ## 2026-06-30 — Additive deterministic router core and grouped retrieval envelope
 
 **Status:** Accepted for the first Phase 3 implementation gate in the
