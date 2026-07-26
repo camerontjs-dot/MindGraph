@@ -4,6 +4,20 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-07-26 — Governed context requires explicit C-0 manifest membership
+
+**Status:** Accepted for the workbench implementation gate.
+
+**Decision:** Keep ordinary `run_query` as the explicit ungated retrieval baseline. Make the separate governed-context helper require a C-0 eligibility manifest with a run identity and approved inventory; it may pass a result only when the result's document ID, resolved source path, and indexed content SHA-256 match one unique approved record. The helper stamps the consumed eligibility run ID onto the returned rows. Missing, empty, malformed, duplicate, mismatched, or status-only inputs produce no governed context rather than an eligibility fallback.
+
+**Why:** Frontmatter status is descriptive source metadata, not a current eligibility decision. A status-only filter and its fallback could admit a source that C-0 quarantined or a source whose contents changed after approval. Exact manifest membership makes the control boundary auditable while leaving MindGraph's ranking and default retrieval contract untouched.
+
+**Consequences:** This is an additive consumer boundary, not a database migration, default CLI/MCP behavior change, C-B bundle, or RAG-quality result. Callers that need governed context must provide a current manifest; callers intentionally running a baseline use `run_query` without this helper. The evaluation project must measure benefit separately on a frozen corpus and preregistered held-out queries.
+
+**Rejected alternatives:** Filtering by `status` alone; falling back to all results when no approved status appears; importing the apparatus project into the engine; or claiming the boundary establishes answer quality or regulatory compliance.
+
+---
+
 ## 2026-07-08 — Opt-in CLI/MCP envelope with legacy list compatibility
 
 **Status:** Accepted. Workbench reconciled with root operational package on
