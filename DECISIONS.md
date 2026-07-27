@@ -4,6 +4,22 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-07-27 — Separable C-0 filtering and context allocation (MainFrame ADR-047)
+
+**Status:** Accepted; workbench implementation pending.
+
+**Decision:** Split `apply_dual_gate_governance` into two behaviour-preserving primitives — `_filter_by_c0_eligibility(results, manifest)` (manifest validation, document ID / resolved path / content-hash matching, and attachment of the consumed eligibility run ID) and `_allocate_context_budget(results, max_seats, max_chars, quiet_keywords)` (seat shortlist, the `quiet_keywords` swap heuristic, and the character budget with its truncation rule). Rewrite the existing helper as the composition of the two, keeping its name, signature, defaults, and behaviour unchanged. Expose two new entry points: `filter_by_c0_eligibility` (no seat or character cap) and `allocate_ungoverned_context` (no manifest parameter). The latter requires a keyword-only `evaluation_use_only: Literal[True]` with no default, refuses an `eligibility_manifest` keyword, never sets `eligibility_run_id`, and stays out of `__all__`, the CLI, and the MCP surface.
+
+**Why:** The dual-gate confirmatory protocol measures two apparatus independently — C-0 source eligibility and Speaker context allocation — across baseline, C-0 only, Speaker only, and both. The combined helper made the Speaker-only arm unreachable (it refuses to run without a manifest, and filters before seating) and reduced the C-0-only arm to setting seat and character limits high enough to "effectively disable" them. That is a parameter choice, not an absent step, so a measured difference could not be attributed to a specific gate. Each arm must differ by the presence or absence of a step.
+
+Allocation is subtractive: `allocate(results, …) ⊆ results`. It cannot admit a source that ungated `run_query` did not already return, so exposing it adds no retrieval reach beyond the existing baseline path. The real risk is misinterpretation — a caller reading "allocated" as "governed" — which the naming, the explicit acknowledgement argument, and the null-provenance assertion address.
+
+**Consequences:** This authorizes measurement only. Promoting ungoverned allocation to any product or default path is a separate decision needing its own evidence; a passing 2×2 arm is not that evidence. `apply_dual_gate_governance` gains no new behaviour and callers are unaffected. Error precedence is preserved deliberately: manifest validation still runs before the negative-argument check and the `max_seats == 0` early return, so manifest errors continue to win. The existing governance tests (five test functions, six collected cases — one is parametrized) must pass **unmodified**; they are the regression proof, and adapting them would void it. Work proceeds workbench-first, then a separate root-promotion packet written once the workbench diff is real rather than predicted.
+
+**Rejected alternatives:** Approximating C-0-only by neutralising seat and character limits; reimplementing the allocator rather than extracting it verbatim; giving `evaluation_use_only` a default or accepting it positionally; adding an automatic ungated fallback inside the governed helper; or exposing the allocator through the CLI or MCP surface.
+
+---
+
 ## 2026-07-26 — Governed context requires explicit C-0 manifest membership
 
 **Status:** Accepted for the workbench implementation gate.

@@ -10,7 +10,7 @@ import logging
 import re
 import sqlite3
 import struct
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph.exceptions import DatabaseError, MindgraphError
@@ -774,6 +774,81 @@ def _approved_manifest_records(
     return run_id.strip(), records
 
 
+def _filter_by_c0_eligibility(
+    results: list[QueryResult],
+    eligibility_manifest: dict[str, Any] | None,
+) -> list[QueryResult]:
+    """Keep only results with exact C-0 manifest membership; stamp the run id.
+
+    Validates the manifest contract, then admits a result only when its
+    ``doc_id``, normalized source path, and indexed content hash all match one
+    approved record. Admitted rows are copies carrying the consumed
+    ``eligibility_run_id``. This applies no seat or character limit — see
+    ``_allocate_context_budget`` for that half. Behaviour is identical to the
+    filtering half of ``apply_dual_gate_governance`` before the split
+    (DECISIONS.md § 2026-07-27, MainFrame ADR-047).
+    """
+    manifest_run_id, approved = _approved_manifest_records(eligibility_manifest)
+
+    eligible: list[QueryResult] = []
+    for result in results:
+        approved_record = approved.get(result.doc_id)
+        if approved_record is None:
+            continue
+        source_path = _result_source_path(result)
+        content_hash = _indexed_hash(result.content_hash)
+        if source_path != approved_record["path"]:
+            continue
+        if content_hash != approved_record["sha256"]:
+            continue
+        eligible.append(result.model_copy(update={"eligibility_run_id": manifest_run_id}))
+    return eligible
+
+
+def _allocate_context_budget(
+    results: list[QueryResult],
+    max_seats: int,
+    max_chars: int,
+    quiet_keywords: list[str] | None,
+) -> list[QueryResult]:
+    """Shortlist seats, apply the ``quiet_keywords`` swap, then the char budget.
+
+    Allocation is subtractive at document granularity: every returned row comes
+    from ``results`` in input order, though the trailing row may be a truncated
+    copy. This makes no eligibility judgement and stamps no provenance. The
+    logic is the allocation half of ``apply_dual_gate_governance`` before the
+    split, preserved verbatim (DECISIONS.md § 2026-07-27, MainFrame ADR-047).
+    """
+    if max_seats < 0 or max_chars < 0:
+        raise QueryError("max_seats and max_chars must be non-negative")
+    if max_seats == 0:
+        return []
+
+    if quiet_keywords and len(results) > max_seats:
+        shortlisted = results[:max_seats]
+        for candidate in results[max_seats:]:
+            candidate_text = (candidate.chunk_text or "").lower()
+            if any(keyword.lower() in candidate_text for keyword in quiet_keywords):
+                shortlisted[-1] = candidate
+                break
+    else:
+        shortlisted = results[:max_seats]
+
+    allocated: list[QueryResult] = []
+    current_chars = 0
+    for item in shortlisted:
+        passage = item.chunk_text or ""
+        if current_chars + len(passage) <= max_chars:
+            allocated.append(item)
+            current_chars += len(passage)
+            continue
+        remaining = max_chars - current_chars
+        if remaining > 100:
+            allocated.append(item.model_copy(update={"chunk_text": passage[:remaining] + "..."}))
+        break
+    return allocated
+
+
 def apply_dual_gate_governance(
     results: list[QueryResult],
     max_seats: int = 3,
@@ -788,46 +863,79 @@ def apply_dual_gate_governance(
     It does not alter ``run_query`` ranking or make a truth/compliance claim.
     ``quiet_keywords`` remains a caller-directed ordering input, never a way to
     admit a result that lacks C-0 membership.
+
+    Composition order is load-bearing: filtering runs first, so manifest
+    validation still raises before the negative-argument check and the
+    ``max_seats == 0`` early return, exactly as it did before the split.
     """
-    manifest_run_id, approved = _approved_manifest_records(eligibility_manifest)
-    if max_seats < 0 or max_chars < 0:
-        raise QueryError("max_seats and max_chars must be non-negative")
-    if max_seats == 0:
-        return []
+    return _allocate_context_budget(
+        _filter_by_c0_eligibility(results, eligibility_manifest),
+        max_seats,
+        max_chars,
+        quiet_keywords,
+    )
 
-    eligible: list[QueryResult] = []
-    for result in results:
-        approved_record = approved.get(result.doc_id)
-        if approved_record is None:
-            continue
-        source_path = _result_source_path(result)
-        content_hash = _indexed_hash(result.content_hash)
-        if source_path != approved_record["path"]:
-            continue
-        if content_hash != approved_record["sha256"]:
-            continue
-        eligible.append(result.model_copy(update={"eligibility_run_id": manifest_run_id}))
 
-    if quiet_keywords and len(eligible) > max_seats:
-        shortlisted = eligible[:max_seats]
-        for candidate in eligible[max_seats:]:
-            candidate_text = (candidate.chunk_text or "").lower()
-            if any(keyword.lower() in candidate_text for keyword in quiet_keywords):
-                shortlisted[-1] = candidate
-                break
-    else:
-        shortlisted = eligible[:max_seats]
+def filter_by_c0_eligibility(
+    results: list[QueryResult],
+    *,
+    eligibility_manifest: dict[str, Any] | None,
+) -> list[QueryResult]:
+    """C-0 filtering with no allocation step — the C-0-only evaluation arm.
 
-    governed: list[QueryResult] = []
-    current_chars = 0
-    for item in shortlisted:
-        passage = item.chunk_text or ""
-        if current_chars + len(passage) <= max_chars:
-            governed.append(item)
-            current_chars += len(passage)
-            continue
-        remaining = max_chars - current_chars
-        if remaining > 100:
-            governed.append(item.model_copy(update={"chunk_text": passage[:remaining] + "..."}))
-        break
-    return governed
+    Returns every manifest-approved result, with no seat count and no character
+    budget applied. This exists so the C-0-only arm of the dual-gate 2x2 differs
+    from the governed arm by an absent step rather than by limits set high
+    enough to be inert. Not exported, not on the CLI or MCP surface.
+    """
+    return _filter_by_c0_eligibility(results, eligibility_manifest)
+
+
+def allocate_ungoverned_context(
+    results: list[QueryResult],
+    max_seats: int = 3,
+    max_chars: int = 4000,
+    quiet_keywords: list[str] | None = None,
+    *,
+    evaluation_use_only: Literal[True],
+    **rejected_keywords: Any,
+) -> list[QueryResult]:
+    """Allocate seats and characters with NO C-0 gate — evaluation instrument only.
+
+    The returned context is **not** C-0 governed. Nothing here checks source
+    eligibility, so this must not feed a governed answer path; it exists solely
+    so the Speaker-only arm of the dual-gate 2x2 can run allocation without
+    filtering. Allocation is subtractive, so this reaches no source that ungated
+    ``run_query`` did not already return.
+
+    ``evaluation_use_only=True`` is keyword-only and has no default, so every
+    call site carries a visible acknowledgement. The function takes no manifest,
+    and never emits governance provenance: ``eligibility_run_id`` is cleared on
+    the way in and asserted null on the way out, so a governed row fed back in
+    cannot launder its run identity through this path.
+    """
+    if "eligibility_manifest" in rejected_keywords:
+        raise QueryError(
+            "allocate_ungoverned_context takes no eligibility manifest; "
+            "use apply_dual_gate_governance for governed context"
+        )
+    if rejected_keywords:
+        unexpected = next(iter(rejected_keywords))
+        raise TypeError(
+            "allocate_ungoverned_context() got an unexpected keyword argument "
+            f"'{unexpected}'"
+        )
+    if evaluation_use_only is not True:
+        raise QueryError(
+            "allocate_ungoverned_context requires evaluation_use_only=True; "
+            "ungoverned allocation is an evaluation instrument, not a governed path"
+        )
+
+    ungoverned = [
+        result.model_copy(update={"eligibility_run_id": None}) for result in results
+    ]
+    allocated = _allocate_context_budget(ungoverned, max_seats, max_chars, quiet_keywords)
+    assert all(item.eligibility_run_id is None for item in allocated), (
+        "ungoverned allocation must never emit C-0 eligibility provenance"
+    )
+    return allocated
