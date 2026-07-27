@@ -80,9 +80,25 @@ def resolve_embed_template(name: str | None = None) -> EmbedTemplate:
 
 
 def load_sentence_embedder(spec: EmbedderSpec):
+    """Load a SentenceTransformer from the local Hugging Face cache only.
+
+    MindGraph expects models to already be cached on disk. Resolving via the
+    hub client can fail with ``RuntimeError: Cannot send a request, as the
+    client has been closed`` even when the cache is warm, so we never open a
+    network metadata request at query/ingest time.
+    """
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(spec.model_id)
+    try:
+        return SentenceTransformer(spec.model_id, local_files_only=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load cached embedding model {spec.model_id!r} with "
+            f"local_files_only=True ({type(exc).__name__}: {exc}). "
+            "Cache the model once while online, for example:\n"
+            "  python -c \"from sentence_transformers import SentenceTransformer; "
+            f"SentenceTransformer({spec.model_id!r})\""
+        ) from exc
 
 
 def format_query_text(spec: EmbedderSpec, text: str, *, template: EmbedTemplate) -> str:
