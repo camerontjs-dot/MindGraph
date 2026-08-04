@@ -4,6 +4,47 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-08-04 — Configurable scope-warning vocabulary
+
+**Status:** Accepted; shipped.
+
+**Context:** `classify_query_scope` drives the `query_scope_warning` field, and
+its trigger terms were four module-level compiled regexes. The term lists encode
+one vault's lifecycle vocabulary, including folder names like `00_inbox` and
+`30_projects` and personal domain words like `job hunt`, `finance`, and
+`calendar`. Anyone else running the engine got warnings tuned to material they
+do not have, and no way to retune without editing installed source.
+
+**Decision:** Express the four term lists as data on a frozen `ScopeVocabulary`
+dataclass, compiled on demand and cached per instance. `classify_query_scope`
+takes an optional vocabulary; passing none resolves `active_scope_vocabulary()`,
+which reads a JSON file named by `MINDGRAPH_SCOPE_VOCABULARY` and otherwise
+returns the defaults. Absent keys inherit defaults, so one branch can be retuned
+without restating the rest. An empty term list disables that branch.
+
+Terms remain regular-expression fragments rather than literals, because the
+shipped defaults already rely on that (`captures?`, `blocked?`, `state\.md`).
+Escaping them would silently change matching.
+
+**Why:** Which words mean "current state" is a property of a corpus, not of the
+engine. The heuristic is sound; only its vocabulary was assumed. An environment
+variable reaches the CLI, the stdio server, and the daemon without threading a
+parameter through every call path.
+
+**Consequences:** Default behavior is unchanged. The four compiled patterns are
+asserted byte-identical to the previous hard-coded regexes by test, so the
+defaults cannot drift silently. The `live_state` branch still requires a hit in
+both the freshness and live-state lists. Malformed vocabulary files fail with a
+named error rather than falling back silently.
+
+**Rejected alternatives:** Escaping terms as literals, which would change
+matching for the shipped defaults; genericizing the defaults by dropping the
+personal domain terms, which would change warning behavior for existing
+deployments; a CLI flag alone, which would not reach the daemon and MCP paths;
+or leaving the vocabulary hard-coded and documenting the limitation.
+
+---
+
 ## 2026-08-04 — Caller-declared daemon scopes
 
 **Status:** Accepted; shipped.

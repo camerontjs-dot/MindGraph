@@ -12,12 +12,18 @@ from mindgraph import cli, db, parser
 from mindgraph.intent import compile_intent_corpus
 from mindgraph.models import QueryResult
 from mindgraph.query import (
+    DEFAULT_SCOPE_VOCABULARY,
     RRF_K,
     MAX_QUERY_TOP_K,
     QueryError,
+    SCOPE_VOCABULARY_ENV,
+    ScopeVocabulary,
     WEAK_FIT_DISTANCE_THRESHOLD,
     _is_weak_fit,
+    _vocabulary_from_env,
+    active_scope_vocabulary,
     classify_query_scope,
+    load_scope_vocabulary,
     fetch_lexical_ranking,
     fetch_semantic_ranking,
     rrf_fuse,
@@ -219,6 +225,98 @@ class TestQueryScopeWarning:
 
     def test_ordinary_durable_knowledge_query_has_no_warning(self):
         assert classify_query_scope("agent memory remember cite forget") is None
+
+
+class TestScopeVocabulary:
+    """The warning terms are configurable; the defaults must not shift."""
+
+    def test_default_patterns_are_unchanged(self):
+        expected = (
+            r"\b(inbox|captures?|routing queue|ready queue|waiting for routing"
+            r"|00_inbox|01_ingest)\b",
+            r"\b(30_projects|project status|active project|project_state"
+            r"|next_action|next action|project readme|state\.md|handoff|next gate)\b",
+            r"\b(current|latest|today|this week|this month|right now|now|recent"
+            r"|live|as of)\b",
+            r"\b(job hunt|finance|calendar|workflow metrics|telemetry|live state"
+            r"|status|blocked?|blockers?|remaining|next)\b",
+        )
+        actual = tuple(p.pattern for p in DEFAULT_SCOPE_VOCABULARY._patterns)
+        assert actual == expected
+
+    def test_custom_terms_replace_defaults_for_that_branch(self):
+        vocab = ScopeVocabulary(inbox_terms=("unfiled", "to sort"))
+        warning = classify_query_scope("some unfiled notes", vocab)
+        assert warning is not None and warning.intent == "inbox_state"
+        assert classify_query_scope("inbox captures", vocab) is None
+
+    def test_unspecified_branches_keep_defaults(self):
+        vocab = ScopeVocabulary(inbox_terms=("unfiled",))
+        assert vocab.freshness_terms == DEFAULT_SCOPE_VOCABULARY.freshness_terms
+        assert vocab.project_terms == DEFAULT_SCOPE_VOCABULARY.project_terms
+
+    def test_empty_term_list_disables_that_branch(self):
+        vocab = ScopeVocabulary(inbox_terms=())
+        assert classify_query_scope("inbox captures waiting for routing", vocab) is None
+
+    def test_live_state_needs_both_freshness_and_state_terms(self):
+        vocab = ScopeVocabulary(live_state_terms=("incident",))
+        assert classify_query_scope("latest incident", vocab).intent == "live_state"
+        assert classify_query_scope("incident", vocab) is None
+
+    def test_from_mapping_partial_override(self):
+        vocab = ScopeVocabulary.from_mapping({"project_terms": ["standup"]})
+        assert vocab.project_terms == ("standup",)
+        assert vocab.inbox_terms == DEFAULT_SCOPE_VOCABULARY.inbox_terms
+
+    def test_from_mapping_rejects_unknown_key(self):
+        with pytest.raises(QueryError, match="unknown scope vocabulary key"):
+            ScopeVocabulary.from_mapping({"bogus_terms": ["x"]})
+
+    def test_from_mapping_rejects_non_list_value(self):
+        with pytest.raises(QueryError, match="must be a list of strings"):
+            ScopeVocabulary.from_mapping({"inbox_terms": "notalist"})
+
+    def test_load_from_json_file(self, tmp_path):
+        path = tmp_path / "vocab.json"
+        path.write_text(jsonlib.dumps({"inbox_terms": ["unfiled"]}))
+        vocab = load_scope_vocabulary(path)
+        assert vocab.inbox_terms == ("unfiled",)
+
+    def test_load_missing_file_raises(self, tmp_path):
+        with pytest.raises(QueryError, match="not found"):
+            load_scope_vocabulary(tmp_path / "absent.json")
+
+    def test_load_invalid_json_raises(self, tmp_path):
+        path = tmp_path / "vocab.json"
+        path.write_text("{not json")
+        with pytest.raises(QueryError, match="not valid JSON"):
+            load_scope_vocabulary(path)
+
+    def test_load_non_object_raises(self, tmp_path):
+        path = tmp_path / "vocab.json"
+        path.write_text("[1, 2]")
+        with pytest.raises(QueryError, match="must contain a JSON object"):
+            load_scope_vocabulary(path)
+
+    def test_env_var_overrides_active_vocabulary(self, tmp_path, monkeypatch):
+        path = tmp_path / "vocab.json"
+        path.write_text(jsonlib.dumps({"inbox_terms": ["unfiled"]}))
+        monkeypatch.setenv(SCOPE_VOCABULARY_ENV, str(path))
+        _vocabulary_from_env.cache_clear()
+        try:
+            assert active_scope_vocabulary().inbox_terms == ("unfiled",)
+            assert classify_query_scope("some unfiled notes").intent == "inbox_state"
+        finally:
+            _vocabulary_from_env.cache_clear()
+
+    def test_no_env_var_uses_defaults(self, monkeypatch):
+        monkeypatch.delenv(SCOPE_VOCABULARY_ENV, raising=False)
+        _vocabulary_from_env.cache_clear()
+        try:
+            assert active_scope_vocabulary() == DEFAULT_SCOPE_VOCABULARY
+        finally:
+            _vocabulary_from_env.cache_clear()
 
 
 # --- Integration tests: against a small ingested vault ----------------------- #

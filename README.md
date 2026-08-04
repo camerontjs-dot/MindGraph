@@ -27,6 +27,46 @@ Each result carries a `signal` label (`lexical`, `semantic`, `fused`, `expanded`
 
 Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
 
+### Tuning the scope warnings
+
+`query_scope_warning` fires on a keyword heuristic, and the shipped defaults
+describe one vault's vocabulary. They are a starting point, not a claim about
+how anyone else labels current state. If your notes say "unfiled" rather than
+"inbox", or "standup" rather than "project status", retune it with a JSON file:
+
+```json
+{
+  "inbox_terms": ["unfiled", "to sort"],
+  "project_terms": ["sprint status", "standup"],
+  "live_state_terms": ["oncall", "deploy", "incident"]
+}
+```
+
+```bash
+export MINDGRAPH_SCOPE_VOCABULARY=~/.mindgraph/scope-vocabulary.json
+```
+
+Four keys are recognized: `inbox_terms`, `project_terms`, `freshness_terms`, and
+`live_state_terms`. Any key you omit keeps its default, so you can retune one
+branch without restating the rest. An empty list disables that warning entirely.
+
+Entries are regular-expression *fragments*, not literals, so `captures?` and
+`state\.md` behave as written. They are joined with `|`, wrapped in `\b(...)\b`,
+and matched case-insensitively.
+
+The `live_state` warning needs a hit in **both** `freshness_terms` and
+`live_state_terms`, so "latest incident" warns and a bare "incident" does not.
+That keeps ordinary durable-knowledge queries quiet.
+
+In Python, pass a vocabulary directly instead:
+
+```python
+from mindgraph.query import ScopeVocabulary, classify_query_scope
+
+vocab = ScopeVocabulary(inbox_terms=("unfiled", "to sort"))
+classify_query_scope("some unfiled notes", vocab)
+```
+
 `mindgraph query --expand` appends graph-walk results. After the fused list returns, the query walks outbound `[[link]]` edges from each fused result to a bounded depth (`--depth N`, default 1, cap 3) and appends walked documents with `signal = "expanded"` and an `expansion_depth` integer. The walk is outbound only, deduplicates against the fused set, terminates at dangling edges, and does not interact with the RRF math. `--expand-top-k N` (default 20) caps appended expanded rows.
 
 `mindgraph query --associate` appends semantic doc-neighbor results (ADR-034). From fused seeds (not expand results), embeds title + chunk excerpt per seed, runs vec kNN, and appends rows with `signal = "associated"`, `association_depth = 1`, and `semantic_distance`. `--associate-top-k` and `--associate-seed-k` cap output and seed count.

@@ -7,9 +7,14 @@ at runtime by design.
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import struct
+from collections.abc import Sequence
+from dataclasses import dataclass
+from functools import cached_property, lru_cache
+from pathlib import Path
 from typing import Any, Protocol
 
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
@@ -31,26 +36,115 @@ MAX_EXPAND_DEPTH = 3
 # out-of-scope queries near 1.10, nonsense near 1.22, so 1.0 sits in the gap.
 WEAK_FIT_DISTANCE_THRESHOLD = 1.0
 
-_INBOX_SCOPE_RE = re.compile(
-    r"\b(inbox|captures?|routing queue|ready queue|waiting for routing|"
-    r"00_inbox|01_ingest)\b",
-    re.IGNORECASE,
+# Scope-warning vocabulary.
+#
+# Each entry is a regular-expression *fragment*, not a literal, so `captures?`
+# and `state\.md` behave as written. Fragments are joined with `|` and wrapped
+# in `\b(...)\b`, matched case-insensitively.
+#
+# The defaults below describe one vault's lifecycle vocabulary. They are a
+# starting point, not a claim about anyone else's notes. Override them with a
+# JSON file (see `load_scope_vocabulary`) when your own material uses different
+# words for "this is current state, not durable knowledge".
+
+DEFAULT_INBOX_TERMS = (
+    "inbox", "captures?", "routing queue", "ready queue",
+    "waiting for routing", "00_inbox", "01_ingest",
 )
-_PROJECT_SCOPE_RE = re.compile(
-    r"\b(30_projects|project status|active project|project_state|"
-    r"next_action|next action|project readme|state\.md|handoff|next gate)\b",
-    re.IGNORECASE,
+DEFAULT_PROJECT_TERMS = (
+    "30_projects", "project status", "active project", "project_state",
+    "next_action", "next action", "project readme", r"state\.md",
+    "handoff", "next gate",
 )
-_LIVE_FRESHNESS_RE = re.compile(
-    r"\b(current|latest|today|this week|this month|right now|now|recent|"
-    r"live|as of)\b",
-    re.IGNORECASE,
+DEFAULT_FRESHNESS_TERMS = (
+    "current", "latest", "today", "this week", "this month", "right now",
+    "now", "recent", "live", "as of",
 )
-_LIVE_STATE_RE = re.compile(
-    r"\b(job hunt|finance|calendar|workflow metrics|telemetry|live state|"
-    r"status|blocked?|blockers?|remaining|next)\b",
-    re.IGNORECASE,
+DEFAULT_LIVE_STATE_TERMS = (
+    "job hunt", "finance", "calendar", "workflow metrics", "telemetry",
+    "live state", "status", "blocked?", "blockers?", "remaining", "next",
 )
+
+
+def _compile_terms(terms: Sequence[str]) -> re.Pattern[str] | None:
+    """Compile alternation fragments into `\\b(a|b|c)\\b`, or None if empty."""
+    kept = [t for t in terms if t]
+    if not kept:
+        return None
+    return re.compile(r"\b(" + "|".join(kept) + r")\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ScopeVocabulary:
+    """Term fragments driving `classify_query_scope`.
+
+    An empty term list disables that warning branch entirely.
+    """
+
+    inbox_terms: tuple[str, ...] = DEFAULT_INBOX_TERMS
+    project_terms: tuple[str, ...] = DEFAULT_PROJECT_TERMS
+    freshness_terms: tuple[str, ...] = DEFAULT_FRESHNESS_TERMS
+    live_state_terms: tuple[str, ...] = DEFAULT_LIVE_STATE_TERMS
+
+    @cached_property
+    def _patterns(self) -> tuple[re.Pattern[str] | None, ...]:
+        return (
+            _compile_terms(self.inbox_terms),
+            _compile_terms(self.project_terms),
+            _compile_terms(self.freshness_terms),
+            _compile_terms(self.live_state_terms),
+        )
+
+    @classmethod
+    def from_mapping(cls, data: dict) -> "ScopeVocabulary":
+        """Build from a mapping. Absent keys keep their defaults."""
+        known = {f: getattr(cls, f, None) for f in cls.__dataclass_fields__}
+        unknown = sorted(set(data) - set(known))
+        if unknown:
+            raise QueryError(
+                f"unknown scope vocabulary key(s): {', '.join(unknown)}; "
+                f"expected any of: {', '.join(sorted(known))}"
+            )
+        kwargs = {}
+        for field in cls.__dataclass_fields__:
+            if field in data:
+                value = data[field]
+                if isinstance(value, str) or not isinstance(value, Sequence):
+                    raise QueryError(
+                        f"scope vocabulary key {field!r} must be a list of strings"
+                    )
+                kwargs[field] = tuple(str(v) for v in value)
+        return cls(**kwargs)
+
+
+DEFAULT_SCOPE_VOCABULARY = ScopeVocabulary()
+
+# Environment variable naming a JSON file that overrides the defaults.
+SCOPE_VOCABULARY_ENV = "MINDGRAPH_SCOPE_VOCABULARY"
+
+
+def load_scope_vocabulary(path: str | os.PathLike[str]) -> ScopeVocabulary:
+    """Load a scope vocabulary from a JSON file. Absent keys keep defaults."""
+    resolved = Path(path).expanduser()
+    try:
+        data = json.loads(resolved.read_text())
+    except FileNotFoundError:
+        raise QueryError(f"scope vocabulary file not found: {resolved}")
+    except json.JSONDecodeError as exc:
+        raise QueryError(f"scope vocabulary file is not valid JSON: {resolved} ({exc})")
+    if not isinstance(data, dict):
+        raise QueryError(f"scope vocabulary file must contain a JSON object: {resolved}")
+    return ScopeVocabulary.from_mapping(data)
+
+
+@lru_cache(maxsize=1)
+def _vocabulary_from_env(raw: str | None) -> ScopeVocabulary:
+    return load_scope_vocabulary(raw) if raw else DEFAULT_SCOPE_VOCABULARY
+
+
+def active_scope_vocabulary() -> ScopeVocabulary:
+    """The vocabulary in force: the env-var override, else the defaults."""
+    return _vocabulary_from_env(os.environ.get(SCOPE_VOCABULARY_ENV))
 
 # A word-character run. Everything else — apostrophes, question marks, and the
 # rest of `.,;/=%[]<>\|~@#$&!` plus the FTS5 operator symbols `"*():^-` — is a
@@ -119,14 +213,22 @@ def sanitize_fts5_query(text: str) -> str:
     return " OR ".join(tokens)
 
 
-def classify_query_scope(query_text: str) -> QueryScopeWarning | None:
+def classify_query_scope(
+    query_text: str, vocabulary: ScopeVocabulary | None = None
+) -> QueryScopeWarning | None:
     """Return an advisory lifecycle-scope warning for current-state queries.
 
     This is deliberately a query-intent guardrail, not a no-answer classifier.
     A query can have strong lexical and semantic matches while still asking the
     wrong database for inbox, live, or project-status state.
+
+    The terms driving it are configurable; see `ScopeVocabulary`. Passing None
+    uses `active_scope_vocabulary()`, which honours the
+    `MINDGRAPH_SCOPE_VOCABULARY` environment variable.
     """
-    if _INBOX_SCOPE_RE.search(query_text):
+    vocab = vocabulary if vocabulary is not None else active_scope_vocabulary()
+    inbox_re, project_re, freshness_re, live_state_re = vocab._patterns
+    if inbox_re and inbox_re.search(query_text):
         return QueryScopeWarning(
             intent="inbox_state",
             recommended_trust_profile="inbox_or_ingest_queue",
@@ -136,7 +238,7 @@ def classify_query_scope(query_text: str) -> QueryScopeWarning | None:
                 "ranked chunks as current-state nominations."
             ),
         )
-    if _PROJECT_SCOPE_RE.search(query_text):
+    if project_re and project_re.search(query_text):
         return QueryScopeWarning(
             intent="project_status",
             recommended_trust_profile="project_status",
@@ -146,7 +248,12 @@ def classify_query_scope(query_text: str) -> QueryScopeWarning | None:
                 "treating ranked chunks as current-state nominations."
             ),
         )
-    if _LIVE_FRESHNESS_RE.search(query_text) and _LIVE_STATE_RE.search(query_text):
+    if (
+        freshness_re
+        and live_state_re
+        and freshness_re.search(query_text)
+        and live_state_re.search(query_text)
+    ):
         return QueryScopeWarning(
             intent="live_state",
             recommended_trust_profile="time_bound_live_state",
