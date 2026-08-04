@@ -79,7 +79,7 @@ def goal(node_id: str, label: str | None = None) -> dict:
         "aliases": [],
         "status": "active",
         "source_refs": [
-            "plan://30_projects/mindgraph/plans/mindgraph-remodel-plan.md"
+            "plan://plans/retrieval-remodel.md"
         ],
     }
 
@@ -91,7 +91,7 @@ def edge(source: str, target: str, relation: str) -> dict:
         "relation": relation,
         "status": "active",
         "source_refs": [
-            "plan://30_projects/mindgraph/plans/mindgraph-remodel-plan.md"
+            "plan://plans/retrieval-remodel.md"
         ],
     }
 
@@ -477,7 +477,7 @@ def test_tied_top_rules_for_different_goals_refuse(tmp_path, catalog):
                 "all_terms": ["project", "status"],
                 "any_terms": ["review"],
             },
-            "source_refs": ["decision://30_projects/mindgraph/decisions.md"],
+            "source_refs": ["decision://DECISIONS.md"],
         }
     )
     destination, _ = compile_document(tmp_path, document)
