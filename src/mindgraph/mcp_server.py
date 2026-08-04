@@ -7,11 +7,13 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
+from starlette.responses import JSONResponse
 
 from mindgraph import db
 from mindgraph import query as query_mod
@@ -36,19 +38,62 @@ class MCPServerStartupError(MindgraphError):
     """Raised when the MCP server cannot start cleanly."""
 
 
+def _find_locked_operational_error(exc: BaseException) -> sqlite3.OperationalError | None:
+    """Find a SQLite lock error even when a query layer wrapped it."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, sqlite3.OperationalError) and "locked" in str(
+            current
+        ).lower():
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _run_with_lock_retry(operation, *, attempts: int = 5, base_delay: float = 0.5):
+    """Retry transient SQLite lock errors, including wrapped query errors."""
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except Exception as exc:
+            if _find_locked_operational_error(exc) is None or attempt + 1 >= attempts:
+                raise
+            time.sleep(base_delay * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
 def open_database(db_path: str) -> sqlite3.Connection:
     """Open and validate the single database used by the MCP server."""
     if db_path != ":memory:" and not Path(db_path).exists():
         raise MCPServerStartupError(f"Database does not exist: {db_path}")
 
     try:
-        conn = db.get_db(db_path)
+        conn = db.get_db(db_path, read_only=True)
         _validate_schema(conn, db_path)
         return conn
     except MindgraphError:
         raise
     except sqlite3.Error as e:
         raise MCPServerStartupError(f"Failed to open database at {db_path}: {e}") from e
+
+
+def open_database_readonly(db_path: str) -> sqlite3.Connection:
+    """Open and validate one index without allowing persistent writes."""
+    expanded = Path(db_path).expanduser().resolve()
+    if not expanded.exists():
+        raise MCPServerStartupError(f"Database does not exist: {expanded}")
+    try:
+        conn = db.get_db(str(expanded), read_only=True)
+        _validate_schema(conn, str(expanded))
+        return conn
+    except MindgraphError:
+        raise
+    except sqlite3.Error as exc:
+        raise MCPServerStartupError(
+            f"Failed to open database at {expanded}: {exc}"
+        ) from exc
 
 
 def _validate_schema(conn: sqlite3.Connection, db_path: str) -> None:
@@ -115,15 +160,14 @@ def create_server(
         associate_seed_k: int = query_mod.DEFAULT_ASSOCIATE_SEED_K,
         envelope: bool = False,
     ) -> CallToolResult:
-        import time
         formatted_question = question
         if embedder_spec is not None:
             formatted_question = format_query_text(
                 embedder_spec, question, template=embed_template
             )
-        for attempt in range(5):
-            try:
-                results = query_mod.run_query(
+        try:
+            results = _run_with_lock_retry(
+                lambda: query_mod.run_query(
                     conn,
                     formatted_question,
                     embedder,
@@ -139,24 +183,22 @@ def create_server(
                     embedder_spec=embedder_spec,
                     embed_template=embed_template,
                 )
-                if envelope:
-                    payload = _query_envelope(
-                        formatted_question,
-                        results,
-                        intent_db_path=intent_db_path,
-                    )
-                    return _json_result(payload)
-                return _json_result([result.model_dump() for result in results])
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < 4:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                return _tool_error(f"Database error: {e}")
-            except MindgraphError as e:
-                return _tool_error(str(e))
-            except Exception:
-                logger.exception("unexpected MCP query tool failure")
-                raise
+            )
+            if envelope:
+                payload = _query_envelope(
+                    formatted_question,
+                    results,
+                    intent_db_path=intent_db_path,
+                )
+                return _json_result(payload)
+            return _json_result([result.model_dump() for result in results])
+        except sqlite3.OperationalError as e:
+            return _tool_error(f"Database error: {e}")
+        except MindgraphError as e:
+            return _tool_error(str(e))
+        except Exception:
+            logger.exception("unexpected MCP query tool failure")
+            raise
 
     @server.tool(
         name="graph_neighbors",
@@ -166,22 +208,20 @@ def create_server(
         ),
     )
     def graph_neighbors_tool(doc_id: str) -> CallToolResult:
-        import time
-        for attempt in range(5):
-            try:
-                _ensure_document_exists(conn, doc_id)
-                results = query_mod.list_neighbors(conn, doc_id)
-                return _json_result([result.model_dump() for result in results])
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < 4:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                return _tool_error(f"Database error: {e}")
-            except MindgraphError as e:
-                return _tool_error(str(e))
-            except Exception:
-                logger.exception("unexpected MCP graph_neighbors tool failure")
-                raise
+        def lookup_neighbors():
+            _ensure_document_exists(conn, doc_id)
+            return query_mod.list_neighbors(conn, doc_id)
+
+        try:
+            results = _run_with_lock_retry(lookup_neighbors)
+            return _json_result([result.model_dump() for result in results])
+        except sqlite3.OperationalError as e:
+            return _tool_error(f"Database error: {e}")
+        except MindgraphError as e:
+            return _tool_error(str(e))
+        except Exception:
+            logger.exception("unexpected MCP graph_neighbors tool failure")
+            raise
 
     return server
 
@@ -189,6 +229,83 @@ def create_server(
 def run_stdio(server: FastMCP) -> None:
     """Run the server on stdio. Stdout is reserved for MCP protocol frames."""
     server.run("stdio")
+
+
+def create_shared_server(
+    scopes: dict[str, tuple[sqlite3.Connection, str]],
+    embedder: query_mod.Embedder,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    path: str = "/mcp",
+    embedder_spec: EmbedderSpec | None = None,
+    embed_template: EmbedTemplate = "none",
+) -> FastMCP:
+    """Create a loopback shared server with one explicit scope per call."""
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise MCPServerStartupError("shared MCP daemon host must be loopback")
+    if not path.startswith("/"):
+        raise MCPServerStartupError("MCP path must start with '/'")
+    server = FastMCP(
+        "mindgraph-shared",
+        instructions="Select one lifecycle scope. Results are nominations, not verified claims.",
+        host=host,
+        port=port,
+        streamable_http_path=path,
+    )
+
+    def selected(scope: str) -> tuple[sqlite3.Connection, str]:
+        try:
+            return scopes[scope]
+        except KeyError as exc:
+            raise query_mod.QueryError(
+                f"unknown scope: {scope}; choose one of: {', '.join(sorted(scopes))}"
+            ) from exc
+
+    @server.tool(name="query")
+    def scoped_query(question: str, scope: str, final_top_k: int = query_mod.DEFAULT_FINAL_TOP_K) -> CallToolResult:
+        try:
+            conn, trust_profile = selected(scope)
+            formatted = (
+                format_query_text(embedder_spec, question, template=embed_template)
+                if embedder_spec is not None else question
+            )
+            rows = _run_with_lock_retry(
+                lambda: query_mod.run_query(conn, formatted, embedder, final_top_k=final_top_k)
+            )
+            return _json_result({"scope": scope, "trust_profile": trust_profile,
+                                 "results": [row.model_dump() for row in rows]})
+        except sqlite3.OperationalError as exc:
+            return _tool_error(f"Database error: {exc}")
+        except MindgraphError as exc:
+            return _tool_error(str(exc))
+
+    @server.tool(name="graph_neighbors")
+    def scoped_neighbors(doc_id: str, scope: str) -> CallToolResult:
+        try:
+            conn, trust_profile = selected(scope)
+            def lookup():
+                _ensure_document_exists(conn, doc_id)
+                return query_mod.list_neighbors(conn, doc_id)
+            rows = _run_with_lock_retry(lookup)
+            return _json_result({"scope": scope, "trust_profile": trust_profile,
+                                 "results": [row.model_dump() for row in rows]})
+        except sqlite3.OperationalError as exc:
+            return _tool_error(f"Database error: {exc}")
+        except MindgraphError as exc:
+            return _tool_error(str(exc))
+
+    @server.custom_route("/health", methods=["GET"])
+    async def health(_request):
+        return JSONResponse({"status": "ok", "scopes": [
+            {"scope": name, "trust_profile": trust}
+            for name, (_conn, trust) in sorted(scopes.items())
+        ]})
+    return server
+
+
+def run_streamable_http(server: FastMCP) -> None:
+    server.run("streamable-http")
 
 
 def _ensure_document_exists(conn: sqlite3.Connection, doc_id: str) -> None:

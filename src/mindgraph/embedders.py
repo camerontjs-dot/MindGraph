@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+from mindgraph.exceptions import EmbeddingError
+
 EmbedTemplate = Literal["none", "mainframe"]
 
 
@@ -62,7 +64,7 @@ def resolve_embedder(name: str | None = None) -> EmbedderSpec:
     key = raw.lower()
     if key not in _REGISTRY:
         known = ", ".join(sorted(_REGISTRY))
-        raise ValueError(f"Unknown embedder {raw!r}; known keys: {known}")
+        raise EmbeddingError(f"Unknown embedder {raw!r}; known keys: {known}")
     return _REGISTRY[key]
 
 
@@ -74,15 +76,31 @@ def resolve_embed_template(name: str | None = None) -> EmbedTemplate:
         return "none"
     if raw == "mainframe":
         return "mainframe"
-    raise ValueError(
+    raise EmbeddingError(
         f"Unknown embed template {raw!r}; known: none, mainframe"
     )
 
 
 def load_sentence_embedder(spec: EmbedderSpec):
+    """Load a SentenceTransformer from the local Hugging Face cache only.
+
+    MindGraph expects models to already be cached on disk. Resolving via the
+    hub client can fail with ``RuntimeError: Cannot send a request, as the
+    client has been closed`` even when the cache is warm, so we never open a
+    network metadata request at query/ingest time.
+    """
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(spec.model_id)
+    try:
+        return SentenceTransformer(spec.model_id, local_files_only=True)
+    except Exception as exc:
+        raise EmbeddingError(
+            f"Failed to load cached embedding model {spec.model_id!r} with "
+            f"local_files_only=True ({type(exc).__name__}: {exc}). "
+            "Cache the model once while online, for example:\n"
+            "  python -c \"from sentence_transformers import SentenceTransformer; "
+            f"SentenceTransformer({spec.model_id!r})\""
+        ) from exc
 
 
 def format_query_text(spec: EmbedderSpec, text: str, *, template: EmbedTemplate) -> str:

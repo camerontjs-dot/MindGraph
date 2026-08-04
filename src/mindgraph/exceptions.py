@@ -6,6 +6,10 @@ class DatabaseError(MindgraphError):
     """Raised when a database connection, schema, or write operation fails."""
 
 
+class EmbeddingError(MindgraphError, ValueError):
+    """Raised when an embedding configuration or runtime cannot be used."""
+
+
 class IngestionError(MindgraphError):
     """Raised when ingesting a file fails. Carries the offending path."""
 

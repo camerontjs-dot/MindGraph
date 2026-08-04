@@ -1,4 +1,5 @@
 import json as jsonlib
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,26 @@ def anyio_backend():
 
 def _doc_id(rel_path: str) -> str:
     return parser.compute_doc_id(rel_path)
+
+
+def test_lock_retry_handles_wrapped_sqlite_operational_error(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def flaky():
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            try:
+                raise sqlite3.OperationalError("database is locked")
+            except sqlite3.OperationalError as exc:
+                raise mcp_server.query_mod.QueryError("wrapped lock") from exc
+        return "ok"
+
+    monkeypatch.setattr(mcp_server.time, "sleep", sleeps.append)
+    assert mcp_server._run_with_lock_retry(flaky) == "ok"
+    assert calls == 3
+    assert sleeps == [0.5, 1.0]
 
 
 @pytest.fixture
@@ -233,6 +254,22 @@ async def test_query_tool_routes_expand_parameters(mcp_runtime):
     assert by_path["balancing-loops.md"]["expansion_depth"] == 1
     assert by_path["systems-archetypes.md"]["signal"] == "expanded"
     assert by_path["systems-archetypes.md"]["expansion_depth"] == 2
+
+
+@pytest.mark.anyio
+async def test_query_tool_rejects_negative_expand_limit(mcp_runtime):
+    server, _conn = mcp_runtime
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.call_tool(
+            "query",
+            {
+                "question": "feedback loops",
+                "expand": True,
+                "expand_top_k": -1,
+            },
+        )
+    assert result.isError is True
+    assert "expand_top_k" in result.content[0].text
 
 
 @pytest.mark.anyio

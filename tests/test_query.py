@@ -1,4 +1,6 @@
 import json as jsonlib
+import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +13,8 @@ from mindgraph.intent import compile_intent_corpus
 from mindgraph.models import QueryResult
 from mindgraph.query import (
     RRF_K,
+    MAX_QUERY_TOP_K,
+    QueryError,
     WEAK_FIT_DISTANCE_THRESHOLD,
     _is_weak_fit,
     classify_query_scope,
@@ -161,6 +165,11 @@ class TestRRFFuse:
         out = rrf_fuse([("a", 1)], [])
         # 1 / 61 is not a terminating decimal.
         assert out[0][2] != round(out[0][2], 2) or out[0][2] == round(out[0][2], 2)
+
+    @pytest.mark.parametrize("top_k", [-1, MAX_QUERY_TOP_K + 1, True])
+    def test_invalid_top_k_is_rejected_instead_of_becoming_unbounded(self, top_k):
+        with pytest.raises(QueryError, match="final_top_k"):
+            rrf_fuse([("a", 1)], [], top_k=top_k)
 
 
 # --- Unit tests: weak-fit heuristic ------------------------------------------ #
@@ -569,6 +578,45 @@ class TestQueryCLI:
         assert "signal=" in result.stdout
         assert "rrf_score=" in result.stdout
 
+    def test_query_command_reads_wal_db_from_nonwritable_directory(
+        self, vault_db, keyword_embedder, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
+        db_path = Path(vault_db)
+        parent = db_path.parent
+        before = db_path.read_bytes()
+        os.chmod(db_path, 0o444)
+        os.chmod(parent, 0o555)
+        try:
+            result = CliRunner().invoke(
+                cli.app, ["query", "zebra", "--db", vault_db, "--json"]
+            )
+            assert result.exit_code == 0, result.output
+            assert jsonlib.loads(result.stdout)
+            assert db_path.read_bytes() == before
+        finally:
+            os.chmod(parent, 0o755)
+            os.chmod(db_path, 0o644)
+
+    def test_query_command_reports_embedder_load_failure_cleanly(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        db_path = tmp_path / "query.sqlite"
+        db.init_db(str(db_path)).close()
+
+        def fail_load(_spec):
+            raise RuntimeError("offline fixture")
+
+        monkeypatch.setattr(cli.embedders, "load_sentence_embedder", fail_load)
+        with caplog.at_level(logging.ERROR, logger="mindgraph"):
+            result = CliRunner().invoke(
+                cli.app,
+                ["query", "hello", "--db", str(db_path), "--no-intent"],
+            )
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, RuntimeError)
+        assert "Failed to load embedding model" in caplog.text
+
     def test_query_command_json_output(
         self, vault_db, keyword_embedder, monkeypatch
     ):
@@ -703,3 +751,24 @@ class TestQueryCLI:
         data = jsonlib.loads(result.stdout)
         assert data
         assert data[0]["query_scope_warning"]["intent"] == "inbox_state"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        ({"lexical_top_k": -1}, "lexical_top_k"),
+        ({"semantic_top_k": MAX_QUERY_TOP_K + 1}, "semantic_top_k"),
+        ({"expand": True, "expand_depth": 4}, "expand_depth"),
+        ({"expand": True, "expand_top_k": -1}, "expand_top_k"),
+        ({"associate": True, "associate_seed_k": -1}, "associate_seed_k"),
+    ],
+)
+def test_run_query_rejects_invalid_resource_limits_before_work(
+    vault_db, keyword_embedder, kwargs, field
+):
+    conn = db.get_db(vault_db)
+    try:
+        with pytest.raises(QueryError, match=field):
+            run_query(conn, "zebra", keyword_embedder, **kwargs)
+    finally:
+        conn.close()

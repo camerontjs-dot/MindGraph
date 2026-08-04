@@ -1,15 +1,16 @@
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
 import typer
 
-from mindgraph import db, embedders, mcp_server, parser
+from mindgraph import daemon, db, embedders, mcp_proxy, mcp_server, parser
 from mindgraph import query as query_mod
-from mindgraph.exceptions import IngestionError, MindgraphError
+from mindgraph.exceptions import EmbeddingError, IngestionError, MindgraphError
 from mindgraph import intent as intent_mod
 from mindgraph import routing as routing_mod
 
@@ -51,17 +52,30 @@ def _configure_logging(verbose: bool) -> None:
 def _load_embedder(embedder: str | None = None):
     spec = embedders.resolve_embedder(embedder)
     logger.info("Loading embedding model (%s)...", spec.model_id)
-    return embedders.load_sentence_embedder(spec)
+    try:
+        return embedders.load_sentence_embedder(spec)
+    except EmbeddingError:
+        raise
+    except Exception as exc:
+        raise EmbeddingError(
+            f"Failed to load embedding model {spec.model_id!r}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def _encode_without_progress(embedder, texts):
     """Encode text while suppressing sentence-transformers progress output."""
     try:
-        return embedder.encode(
-            texts, convert_to_numpy=True, show_progress_bar=False
-        )
-    except TypeError:
-        return embedder.encode(texts, convert_to_numpy=True)
+        try:
+            return embedder.encode(
+                texts, convert_to_numpy=True, show_progress_bar=False
+            )
+        except TypeError:
+            return embedder.encode(texts, convert_to_numpy=True)
+    except Exception as exc:
+        raise EmbeddingError(
+            f"Embedding model failed to encode input: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -158,8 +172,10 @@ def _ingest_scopes(
     stats["total"] = len(md_files)
 
     if not md_files:
-        logger.warning("No markdown files found in ingest scope(s)")
-        return stats
+        logger.warning(
+            "No markdown files found in authoritative ingest scope(s); "
+            "pruning stale indexed documents"
+        )
 
     spec = embedders.resolve_embedder(embedder)
     template = embedders.resolve_embed_template(embed_template)
@@ -403,6 +419,134 @@ def init(
         )
     except MindgraphError as e:
         logger.error(str(e))
+        raise typer.Exit(code=1)
+
+
+def _format_db_doctor_block(report: dict) -> str:
+    status = "OK" if report.get("ok") else "FAIL"
+    role = report.get("role") or "db"
+    trust = report.get("trust_profile") or "-"
+    lines = [
+        f"## {role}  [{status}]",
+        f"  path:           {report.get('path')}",
+        f"  trust_profile:  {trust}",
+        f"  exists:         {report.get('exists')}",
+    ]
+    if report.get("size_bytes") is not None:
+        size = report["size_bytes"]
+        if size >= 1_048_576:
+            size_h = f"{size / 1_048_576:.1f} MiB"
+        elif size >= 1024:
+            size_h = f"{size / 1024:.1f} KiB"
+        else:
+            size_h = f"{size} B"
+        lines.append(f"  size:           {size_h} ({size} bytes)")
+    if report.get("mtime_iso"):
+        lines.append(f"  mtime:          {report['mtime_iso']}")
+    if report.get("embedding_dims") is not None:
+        lines.append(f"  embedding_dims: {report['embedding_dims']}")
+    missing = report.get("tables_missing") or []
+    if missing:
+        lines.append(f"  tables_missing: {', '.join(missing)}")
+    else:
+        lines.append("  tables_missing: (none)")
+    counts = report.get("counts") or {}
+    if counts:
+        parts = [
+            f"{k}={v}" for k, v in counts.items() if v is not None
+        ]
+        if parts:
+            lines.append(f"  counts:         {', '.join(parts)}")
+    for issue in report.get("issues") or []:
+        lines.append(f"  issue:          {issue}")
+    for warn in report.get("warnings") or []:
+        lines.append(f"  warning:        {warn}")
+    return "\n".join(lines)
+
+
+@app.command("doctor")
+@app.command("status")
+def doctor(
+    db_path: str | None = typer.Option(
+        None,
+        "--db",
+        help="Inspect a single DB. Default: dual MainFrame indexes under ~/.mindgraph/.",
+    ),
+    workspace: Path | None = typer.Option(
+        None,
+        "--workspace",
+        help="Also scan this directory for tiny stub mainframe*.sqlite files (default: cwd).",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON diagnostics."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """First-contact diagnostics for MindGraph indexes (MH01).
+
+    Reports authoritative DB paths, sizes, required tables (documents_fts,
+    vec_chunks, …), row counts, and workspace stub traps — without loading the
+    embedding model.
+    """
+    _configure_logging(verbose)
+    reports: list[dict] = []
+    if db_path:
+        reports.append(db.inspect_database(db_path))
+    else:
+        for spec in db.default_dual_db_specs():
+            report = db.inspect_database(
+                spec["path"],
+                role=spec["role"],
+                trust_profile=spec["trust_profile"],
+            )
+            report["refresh_hint"] = spec.get("refresh_hint")
+            reports.append(report)
+
+    scan_root = workspace if workspace is not None else Path.cwd()
+    stubs = db.find_workspace_stub_sqlite([scan_root])
+
+    # Exit non-zero only when a checked index is unusable. Workspace stubs are
+    # loud warnings (common on MainFrame checkouts) but not hard failures when
+    # ~/.mindgraph indexes are healthy.
+    dbs_ok = all(r.get("ok") for r in reports)
+    payload = {
+        "ok": dbs_ok,
+        "databases": reports,
+        "workspace_stubs": stubs,
+        "hints": [
+            "Authoritative DBs: ~/.mindgraph/mainframe.sqlite (durable_knowledge)",
+            "Authoritative DBs: ~/.mindgraph/mainframe-projects.sqlite (project_status)",
+            "Never query workspace-root mainframe*.sqlite stubs",
+            "Refresh: bin/mindgraph-refresh && bin/mindgraph-refresh-projects",
+        ],
+    }
+
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo("# MindGraph doctor")
+        typer.echo("")
+        for report in reports:
+            typer.echo(_format_db_doctor_block(report))
+            if report.get("refresh_hint") and not report.get("ok"):
+                typer.echo(f"  refresh_hint:  {report['refresh_hint']}")
+            typer.echo("")
+        if stubs:
+            typer.echo("## workspace stubs (do not query these)")
+            for stub in stubs:
+                typer.echo(f"  path: {stub['path']}  size={stub['size_bytes']} B")
+                typer.echo(f"  warning: {stub['warning']}")
+            typer.echo("")
+        if dbs_ok:
+            msg = "Overall: OK — dual indexes look query-ready."
+            if stubs:
+                msg += " (workspace stubs present — ignore them; use ~/.mindgraph paths)"
+            typer.echo(msg)
+        else:
+            typer.echo("Overall: FAIL — fix database issues above before planning queries.")
+            typer.echo("Hints:")
+            for h in payload["hints"]:
+                typer.echo(f"  - {h}")
+
+    if not dbs_ok:
         raise typer.Exit(code=1)
 
 
@@ -671,121 +815,131 @@ def query(
     """
     _configure_logging(verbose)
     try:
-        conn = db.get_db(db_path)
+        conn = db.get_db(db_path, read_only=True)
+        # MH01: fail fast on stub/incomplete DBs instead of soft FTS degradation.
+        db.validate_query_schema(conn, db_path)
     except MindgraphError as e:
         logger.error(str(e))
         raise typer.Exit(code=1)
+
     try:
-        spec = embedders.resolve_embedder(embedder)
-        template = embedders.resolve_embed_template(embed_template)
-        model = _load_embedder(spec.key)
-        formatted_question = embedders.format_query_text(
-            spec, question, template=template
-        )
-        results = query_mod.run_query(
-            conn,
-            formatted_question,
-            model,
-            lexical_top_k=lexical_top_k,
-            semantic_top_k=semantic_top_k,
-            final_top_k=final_top_k,
-            expand=expand,
-            expand_depth=expand_depth,
-            expand_top_k=expand_top_k,
-            associate=associate,
-            associate_top_k=associate_top_k,
-            associate_seed_k=associate_seed_k,
-            embedder_spec=spec,
-            embed_template=template,
-        )
-    except MindgraphError as e:
-        logger.error(str(e))
-        conn.close()
-        raise typer.Exit(code=1)
+        try:
+            spec = embedders.resolve_embedder(embedder)
+            template = embedders.resolve_embed_template(embed_template)
+            model = _load_embedder(spec.key)
+            formatted_question = embedders.format_query_text(
+                spec, question, template=template
+            )
+            results = query_mod.run_query(
+                conn,
+                formatted_question,
+                model,
+                lexical_top_k=lexical_top_k,
+                semantic_top_k=semantic_top_k,
+                final_top_k=final_top_k,
+                expand=expand,
+                expand_depth=expand_depth,
+                expand_top_k=expand_top_k,
+                associate=associate,
+                associate_top_k=associate_top_k,
+                associate_seed_k=associate_seed_k,
+                embedder_spec=spec,
+                embed_template=template,
+            )
+        except MindgraphError as e:
+            logger.error(str(e))
+            raise typer.Exit(code=1)
+
+        resolution = None
+        if not no_intent and (envelope or not as_json):
+            intent_path = os.path.expanduser(intent_db)
+            intent_conn = None
+            if os.path.exists(intent_path):
+                try:
+                    intent_conn = intent_mod.open_intent_store(intent_path)
+                except Exception as exc:
+                    logger.warning("Failed to open intent DB: %s", exc)
+            if intent_conn:
+                try:
+                    resolution = intent_mod.resolve_intent(
+                        intent_conn,
+                        formatted_question,
+                        limits=intent_mod.TraversalLimits(max_depth=2, max_nodes=32),
+                    )
+                finally:
+                    try:
+                        intent_conn.close()
+                    except Exception:
+                        pass
+
+        if as_json:
+            if envelope:
+                # Match MCP envelope shape so CLI and tool callers share one parser.
+                if resolution is not None:
+                    resolution_payload = mcp_server._intent_resolution_payload(
+                        resolution
+                    )
+                    reason = "intent_resolved"
+                    warnings = list(resolution.warnings)
+                else:
+                    intent_path = Path(os.path.expanduser(intent_db))
+                    if intent_path.exists():
+                        reason = "intent_resolution_skipped_or_failed"
+                        warnings = ["intent_resolution_unavailable"]
+                    else:
+                        reason = "intent_store_missing"
+                        warnings = []
+                    resolution_payload = None
+                out = {
+                    "schema_version": routing_mod.SCHEMA_VERSION,
+                    "intent_resolution": resolution_payload,
+                    "routing": {
+                        "mode": "single_database",
+                        "selected_retrievers": ["cli-bound-db"],
+                        "reason_codes": [reason],
+                        "warnings": warnings,
+                    },
+                    "results": [r.model_dump() for r in results],
+                }
+            else:
+                out = [r.model_dump() for r in results]
+            typer.echo(json.dumps(out, indent=2, default=str))
+            return
+
+        if resolution:
+            typer.echo("=== Intent Resolution from graph ===")
+            typer.echo(
+                f"graph: {resolution.graph_id}@{resolution.graph_version}"
+            )
+            typer.echo(
+                f"outcome: {resolution.outcome} "
+                f"(method: {resolution.resolution_method})"
+            )
+            if resolution.matched_goal_ids:
+                typer.echo(f"matched goals: {list(resolution.matched_goal_ids)}")
+            if resolution.capability_hints:
+                typer.echo(f"hints: {list(resolution.capability_hints)}")
+            if resolution.warnings:
+                typer.echo(f"warnings: {list(resolution.warnings)}")
+            typer.echo("--- results below ---")
+        elif not no_intent:
+            typer.echo("(no intent DB or resolution; legacy results)")
+
+        warning = query_mod.classify_query_scope(question)
+        if warning is not None:
+            typer.echo(_format_scope_warning(warning))
+
+        if not results:
+            typer.echo("(no candidate found)")
+            return
+
+        for idx, result in enumerate(results, start=1):
+            typer.echo(_format_query_result_block(idx, result))
     finally:
         try:
             conn.close()
         except Exception:  # noqa: BLE001
             pass
-
-    resolution = None
-    if not no_intent and (envelope or not as_json):
-        intent_path = os.path.expanduser(intent_db)
-        intent_conn = None
-        if os.path.exists(intent_path):
-            try:
-                intent_conn = intent_mod.open_intent_store(intent_path)
-            except Exception as exc:
-                logger.warning("Failed to open intent DB: %s", exc)
-        if intent_conn:
-            try:
-                resolution = intent_mod.resolve_intent(
-                    intent_conn,
-                    formatted_question,
-                    limits=intent_mod.TraversalLimits(max_depth=2, max_nodes=32),
-                )
-            finally:
-                try:
-                    intent_conn.close()
-                except Exception:
-                    pass
-
-    if as_json:
-        if envelope:
-            # Match MCP envelope shape so CLI and tool callers share one parser.
-            if resolution is not None:
-                resolution_payload = mcp_server._intent_resolution_payload(resolution)
-                reason = "intent_resolved"
-                warnings = list(resolution.warnings)
-            else:
-                intent_path = Path(os.path.expanduser(intent_db))
-                if intent_path.exists():
-                    reason = "intent_resolution_skipped_or_failed"
-                    warnings = ["intent_resolution_unavailable"]
-                else:
-                    reason = "intent_store_missing"
-                    warnings = []
-                resolution_payload = None
-            out = {
-                "schema_version": routing_mod.SCHEMA_VERSION,
-                "intent_resolution": resolution_payload,
-                "routing": {
-                    "mode": "single_database",
-                    "selected_retrievers": ["cli-bound-db"],
-                    "reason_codes": [reason],
-                    "warnings": warnings,
-                },
-                "results": [r.model_dump() for r in results],
-            }
-        else:
-            out = [r.model_dump() for r in results]
-        typer.echo(json.dumps(out, indent=2, default=str))
-        return
-
-    if resolution:
-        typer.echo("=== Intent Resolution from graph ===")
-        typer.echo(f"graph: {resolution.graph_id}@{resolution.graph_version}")
-        typer.echo(f"outcome: {resolution.outcome} (method: {resolution.resolution_method})")
-        if resolution.matched_goal_ids:
-            typer.echo(f"matched goals: {list(resolution.matched_goal_ids)}")
-        if resolution.capability_hints:
-            typer.echo(f"hints: {list(resolution.capability_hints)}")
-        if resolution.warnings:
-            typer.echo(f"warnings: {list(resolution.warnings)}")
-        typer.echo("--- results below ---")
-    elif not no_intent:
-        typer.echo("(no intent DB or resolution; legacy results)")
-
-    warning = query_mod.classify_query_scope(question)
-    if warning is not None:
-        typer.echo(_format_scope_warning(warning))
-
-    if not results:
-        typer.echo("(no candidate found)")
-        return
-
-    for idx, result in enumerate(results, start=1):
-        typer.echo(_format_query_result_block(idx, result))
 
 
 @app.command()
@@ -800,7 +954,7 @@ def neighbors(
     """List outbound edges from a document. Preserves dangling edges."""
     _configure_logging(verbose)
     try:
-        conn = db.get_db(db_path)
+        conn = db.get_db(db_path, read_only=True)
     except MindgraphError as e:
         logger.error(str(e))
         raise typer.Exit(code=1)
@@ -872,6 +1026,126 @@ def serve_mcp(
     finally:
         if conn is not None:
             conn.close()
+
+
+SCOPE_SPEC_HELP = (
+    "Serve an arbitrary named scope: NAME=PATH or NAME:TRUST_PROFILE=PATH. "
+    "Repeatable. Trust profile defaults to NAME. When any --scope is given it "
+    "replaces the default knowledge/projects pair."
+)
+
+
+def parse_scope_specs(values: list[str] | None) -> dict[str, tuple[str, str]]:
+    """Parse `NAME=PATH` / `NAME:TRUST=PATH` specs into {name: (path, trust)}.
+
+    Split on the first `=` only, so database paths may contain any character.
+    """
+    scopes: dict[str, tuple[str, str]] = {}
+    for raw in values or []:
+        name_part, sep, db_path = raw.partition("=")
+        if not sep or not name_part.strip() or not db_path.strip():
+            raise MindgraphError(
+                f"invalid --scope {raw!r}; expected NAME=PATH or NAME:TRUST_PROFILE=PATH"
+            )
+        name, _, trust = name_part.partition(":")
+        name, trust = name.strip(), trust.strip()
+        if not name:
+            raise MindgraphError(f"invalid --scope {raw!r}; scope name is empty")
+        if name in scopes:
+            raise MindgraphError(f"duplicate --scope name: {name}")
+        scopes[name] = (db_path.strip(), trust or name)
+    return scopes
+
+
+@app.command("serve-daemon")
+def serve_daemon(
+    knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
+    projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
+    scope: list[str] = typer.Option(None, "--scope", help=SCOPE_SPEC_HELP),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    path: str = typer.Option("/mcp", "--path"),
+    embedder: str | None = typer.Option(None, "--embedder"),
+):
+    """Run the explicit-scope shared MCP server in the foreground."""
+    conns = []
+    try:
+        requested = parse_scope_specs(scope) or {
+            "knowledge": (knowledge_db, "durable_knowledge"),
+            "projects": (projects_db, "project_status"),
+        }
+        scopes = {}
+        for name, (db_path, trust_profile) in requested.items():
+            conn = mcp_server.open_database_readonly(db_path)
+            conns.append(conn)
+            scopes[name] = (conn, trust_profile)
+        spec = embedders.resolve_embedder(embedder)
+        server = mcp_server.create_shared_server(
+            scopes,
+            _load_embedder(spec.key), host=host, port=port, path=path,
+            embedder_spec=spec,
+        )
+        mcp_server.run_streamable_http(server)
+    except MindgraphError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    finally:
+        for conn in conns:
+            conn.close()
+
+
+@app.command("mcp-proxy")
+def mcp_proxy_command(url: str = typer.Option("http://127.0.0.1:8000/mcp", "--url")):
+    """Proxy stdio MCP to an already-running shared daemon."""
+    try:
+        mcp_proxy.run_proxy_sync(url)
+    except Exception as exc:
+        typer.echo(f"MCP proxy failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("daemon-start")
+def daemon_start(
+    state_dir: Path = typer.Option(Path("~/.mindgraph/run").expanduser(), "--state-dir"),
+    knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
+    projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
+    scope: list[str] = typer.Option(None, "--scope", help=SCOPE_SPEC_HELP),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    path: str = typer.Option("/mcp", "--path"),
+):
+    try:
+        parse_scope_specs(scope)
+    except MindgraphError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    command = [sys.executable, "-m", "mindgraph.cli", "serve-daemon",
+               "--host", host, "--port", str(port), "--path", path]
+    if scope:
+        for spec in scope:
+            command.extend(["--scope", spec])
+    else:
+        command.extend(["--knowledge-db", knowledge_db,
+                        "--projects-db", projects_db])
+    typer.echo(json.dumps(daemon.start(state_dir, command)))
+
+
+@app.command("daemon-status")
+def daemon_status(state_dir: Path = typer.Option(Path("~/.mindgraph/run").expanduser(), "--state-dir")):
+    typer.echo(json.dumps(daemon.status(state_dir)))
+
+
+@app.command("daemon-health")
+def daemon_health(url: str = typer.Option("http://127.0.0.1:8000/health", "--url")):
+    result = daemon.health(url)
+    typer.echo(json.dumps(result))
+    if result.get("status") != "ok":
+        raise typer.Exit(1)
+
+
+@app.command("daemon-stop")
+def daemon_stop(state_dir: Path = typer.Option(Path("~/.mindgraph/run").expanduser(), "--state-dir")):
+    typer.echo(json.dumps(daemon.stop(state_dir)))
 
 
 if __name__ == "__main__":

@@ -1,34 +1,103 @@
+import os
 import sqlite3
 import struct
+import time
 from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 import sqlite_vec
 
 from mindgraph.exceptions import DatabaseError
 from mindgraph.models import GraphEdge, ParsedDocument
 
+# Tables required for fused lexical + semantic query (MH01 first-contact contract).
+REQUIRED_QUERY_TABLES = frozenset(
+    {
+        "documents",
+        "documents_fts",
+        "chunks",
+        "vec_chunks",
+        "edges",
+    }
+)
 
-def get_db(db_path: str = "mindgraph.sqlite") -> sqlite3.Connection:
-    """Connect to the SQLite database and load the sqlite-vec extension."""
-    try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+# Heuristic: workspace-root stub SQLite files from early scaffolding are tiny.
+STUB_SIZE_BYTES = 16_384  # 16 KiB
+
+
+def _configure_connection(
+    conn: sqlite3.Connection, *, read_only: bool
+) -> sqlite3.Connection:
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    if read_only:
+        conn.execute("PRAGMA query_only = ON")
+        # Force SQLite to read the schema now. A WAL database can connect in
+        # mode=ro and then fail on its first query when the containing directory
+        # cannot host a shared-memory file; callers need that failure here so
+        # the immutable snapshot fallback can be selected deterministically.
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+    else:
         # WAL lets the long-lived MCP reader and the ingest/refresh writer
         # coexist without `database is locked` errors. Journal mode is a
-        # persistent property of the file, so issuing it on every connection is
-        # idempotent and also migrates a pre-existing rollback-journal DB.
+        # persistent property of the file, so issuing it on every writable
+        # connection is idempotent and migrates pre-existing rollback journals.
         conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+def _open_read_only(db_path: str) -> sqlite3.Connection:
+    """Open a query-only database, falling back to an immutable snapshot.
+
+    Normal ``mode=ro`` remains preferred because it observes a live WAL. The
+    immutable fallback is only used when SQLite cannot create/read WAL shared
+    memory in a non-writable runtime (for example, a sandbox-mounted index).
+    """
+    if db_path == ":memory:":
+        raise DatabaseError(":memory: cannot be opened read-only")
+
+    resolved = Path(db_path).expanduser().resolve()
+    base_uri = f"file:{quote(str(resolved), safe='/')}?mode=ro"
+    last_error: Exception | None = None
+    for immutable in (False, True):
+        conn: sqlite3.Connection | None = None
+        uri = f"{base_uri}&immutable=1" if immutable else base_uri
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+            return _configure_connection(conn, read_only=True)
+        except (sqlite3.Error, RuntimeError) as exc:
+            last_error = exc
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+    assert last_error is not None
+    raise DatabaseError(f"Failed to open database at {db_path}: {last_error}")
+
+
+def get_db(
+    db_path: str = "mindgraph.sqlite", *, read_only: bool = False
+) -> sqlite3.Connection:
+    """Connect to SQLite, load sqlite-vec, and apply the requested access mode."""
+    if read_only:
+        return _open_read_only(db_path)
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=30.0)
+        _configure_connection(conn, read_only=False)
         if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
         ).fetchone():
             with conn:
                 _ensure_document_provenance_columns(conn)
         return conn
-    except sqlite3.Error as e:
+    except (sqlite3.Error, RuntimeError) as e:
         raise DatabaseError(f"Failed to open database at {db_path}: {e}") from e
 
 
@@ -123,6 +192,192 @@ def init_db(
         """)
 
     return conn
+
+
+def list_table_names(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')"
+    ).fetchall()
+    return {row["name"] if isinstance(row, sqlite3.Row) else row[0] for row in rows}
+
+
+def missing_required_tables(
+    conn: sqlite3.Connection, required: frozenset[str] = REQUIRED_QUERY_TABLES
+) -> list[str]:
+    existing = list_table_names(conn)
+    return sorted(required - existing)
+
+
+def validate_query_schema(
+    conn: sqlite3.Connection,
+    db_path: str,
+    *,
+    required: frozenset[str] = REQUIRED_QUERY_TABLES,
+) -> None:
+    """Fail fast when a DB cannot support fused query (MH01 doctor contract).
+
+    Raises DatabaseError with an actionable message instead of soft-degrading
+    to semantic-only / empty FTS results on stub databases.
+    """
+    missing = missing_required_tables(conn, required)
+    if missing:
+        raise DatabaseError(
+            f"Database at {db_path} is not a usable MindGraph index; "
+            f"missing tables: {', '.join(missing)}. "
+            "Authoritative DBs live under ~/.mindgraph/ "
+            "(not workspace-root stub *.sqlite files). "
+            "Run: bin/mindgraph doctor && bin/mindgraph-refresh"
+        )
+
+
+def _count(conn: sqlite3.Connection, sql: str) -> int | None:
+    try:
+        row = conn.execute(sql).fetchone()
+        if row is None:
+            return None
+        return int(row[0])
+    except sqlite3.Error:
+        return None
+
+
+def inspect_database(
+    db_path: str,
+    *,
+    role: str | None = None,
+    trust_profile: str | None = None,
+) -> dict[str, Any]:
+    """Return a doctor diagnostic payload for one database path.
+
+    Does not load the embedding model. Safe for first-contact preflight.
+    """
+    expanded = os.path.expanduser(db_path)
+    path = Path(expanded)
+    report: dict[str, Any] = {
+        "path": str(path),
+        "role": role,
+        "trust_profile": trust_profile,
+        "exists": path.exists(),
+        "size_bytes": None,
+        "mtime_iso": None,
+        "ok": False,
+        "issues": [],
+        "warnings": [],
+        "tables_present": [],
+        "tables_missing": sorted(REQUIRED_QUERY_TABLES),
+        "counts": {},
+        "embedding_dims": None,
+        "likely_stub": False,
+    }
+
+    if not path.exists():
+        report["issues"].append("file_missing")
+        return report
+
+    try:
+        stat = path.stat()
+    except OSError as e:
+        report["issues"].append(f"stat_failed:{e}")
+        return report
+
+    report["size_bytes"] = stat.st_size
+    report["mtime_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime))
+    if stat.st_size <= STUB_SIZE_BYTES:
+        report["likely_stub"] = True
+        report["warnings"].append(
+            f"file is very small ({stat.st_size} bytes); may be a workspace stub, "
+            "not an authoritative index"
+        )
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = get_db(str(path), read_only=True)
+        tables = list_table_names(conn)
+        report["tables_present"] = sorted(tables)
+        missing = missing_required_tables(conn)
+        report["tables_missing"] = missing
+        if missing:
+            report["issues"].append("missing_required_tables")
+        report["embedding_dims"] = get_embedding_dims(conn)
+        report["counts"] = {
+            "documents": _count(conn, "SELECT COUNT(*) FROM documents")
+            if "documents" in tables
+            else None,
+            "chunks": _count(conn, "SELECT COUNT(*) FROM chunks")
+            if "chunks" in tables
+            else None,
+            "edges": _count(conn, "SELECT COUNT(*) FROM edges")
+            if "edges" in tables
+            else None,
+            "vec_chunks": _count(conn, "SELECT COUNT(*) FROM vec_chunks")
+            if "vec_chunks" in tables
+            else None,
+        }
+        docs = report["counts"].get("documents")
+        if docs == 0 and not missing:
+            report["warnings"].append("index has zero documents — run mindgraph-refresh")
+        report["ok"] = not report["issues"]
+    except DatabaseError as e:
+        report["issues"].append("open_failed")
+        report["warnings"].append(str(e))
+    except sqlite3.Error as e:
+        report["issues"].append("sqlite_error")
+        report["warnings"].append(str(e))
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    return report
+
+
+def default_dual_db_specs() -> list[dict[str, str]]:
+    """Authoritative MainFrame dual-index locations (MH01 / HARNESS)."""
+    home = Path.home() / ".mindgraph"
+    return [
+        {
+            "role": "knowledge",
+            "trust_profile": "durable_knowledge",
+            "path": str(home / "mainframe.sqlite"),
+            "refresh_hint": "bin/mindgraph-refresh",
+        },
+        {
+            "role": "projects",
+            "trust_profile": "project_status",
+            "path": str(home / "mainframe-projects.sqlite"),
+            "refresh_hint": "bin/mindgraph-refresh-projects",
+        },
+    ]
+
+
+def find_workspace_stub_sqlite(search_roots: list[Path] | None = None) -> list[dict[str, Any]]:
+    """Detect tiny workspace-root *.sqlite files that look authoritative but are not."""
+    roots = search_roots or [Path.cwd()]
+    hits: list[dict[str, Any]] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for name in ("mainframe.sqlite", "mainframe-projects.sqlite"):
+            p = root / name
+            if not p.is_file():
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if size <= STUB_SIZE_BYTES:
+                hits.append(
+                    {
+                        "path": str(p.resolve()),
+                        "size_bytes": size,
+                        "warning": (
+                            "Workspace-root sqlite looks like a stub. "
+                            "Query ~/.mindgraph/*.sqlite instead."
+                        ),
+                    }
+                )
+    return hits
 
 
 def get_embedding_dims(conn: sqlite3.Connection) -> int | None:

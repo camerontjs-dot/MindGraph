@@ -62,6 +62,8 @@ class QueryResult(BaseModel):
     source_root: str | None = None
     source_path: str | None = None
     display_path: str | None = None
+    content_hash: str | None = None
+    eligibility_run_id: str | None = None
     signal: Signal
     rrf_score: float
     lexical_rank: int | None

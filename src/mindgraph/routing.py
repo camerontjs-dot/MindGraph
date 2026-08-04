@@ -33,6 +33,7 @@ from mindgraph.intent import (
     resolve_intent,
 )
 from mindgraph.models import QueryResult
+from mindgraph import db as db_mod
 from mindgraph import query as query_mod
 
 
@@ -738,21 +739,9 @@ def open_query_store_read_only(path: Path) -> sqlite3.Connection:
         raise RoutingError(
             "retriever_unavailable", f"query store does not exist: {resolved}"
         )
-    uri = f"file:{quote(str(resolved), safe='/')}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True, timeout=30.0)
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA query_only = ON")
-        return conn
-    except (sqlite3.Error, RuntimeError) as exc:
-        try:
-            conn.close()
-        except (UnboundLocalError, sqlite3.Error):
-            pass
+        return db_mod.get_db(str(resolved), read_only=True)
+    except (db_mod.DatabaseError, sqlite3.Error, RuntimeError) as exc:
         raise RoutingError(
             "retriever_unavailable", f"failed to open query store: {exc}"
         ) from exc

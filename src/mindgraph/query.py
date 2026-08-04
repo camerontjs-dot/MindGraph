@@ -10,7 +10,7 @@ import logging
 import re
 import sqlite3
 import struct
-from typing import Protocol
+from typing import Any, Protocol
 
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph.exceptions import DatabaseError, MindgraphError
@@ -22,6 +22,8 @@ RRF_K = 60
 DEFAULT_LEXICAL_TOP_K = 20
 DEFAULT_SEMANTIC_TOP_K = 20
 DEFAULT_FINAL_TOP_K = 10
+MAX_QUERY_TOP_K = 1000
+MAX_EXPAND_DEPTH = 3
 
 # Best-semantic-distance cutoff above which a semantic-only result is flagged
 # weak_fit ("this index probably has no answer"). Calibrated against the live
@@ -60,10 +62,20 @@ _FTS5_TOKEN = re.compile(r"\w+")
 # FTS5 reserved operator keywords. FTS5 treats lowercase `and`, `or`, `not`,
 # `near` as ordinary tokens, so only the uppercase forms are dropped.
 _FTS5_OPERATOR_KEYWORDS = frozenset({"AND", "OR", "NOT", "NEAR"})
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_TAGGED = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class QueryError(MindgraphError):
     """Raised when a query execution fails."""
+
+
+def _validate_limit(name: str, value: int, *, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise QueryError(f"{name} must be an integer")
+    if value < 0 or value > maximum:
+        raise QueryError(f"{name} must be between 0 and {maximum}")
+    return value
 
 
 class Embedder(Protocol):
@@ -161,7 +173,8 @@ def fetch_lexical_ranking(
 
     Ranks start at 1. Returns an empty list when sanitization strips all tokens.
     """
-    if top_k <= 0:
+    _validate_limit("lexical_top_k", top_k, maximum=MAX_QUERY_TOP_K)
+    if top_k == 0:
         return []
     match_expr = sanitize_fts5_query(query_text)
     if not match_expr:
@@ -195,7 +208,8 @@ def fetch_semantic_ranking(
     those of its first (closest) chunk in the chunk-level ranking. The distance
     is carried through fusion for the Phase 7 weak-fit signal.
     """
-    if top_k <= 0:
+    _validate_limit("semantic_top_k", top_k, maximum=MAX_QUERY_TOP_K)
+    if top_k == 0:
         return []
     try:
         # sqlite-vec requires the LIMIT or `k = ?` constraint to be visible on
@@ -246,7 +260,8 @@ def rrf_fuse(
     enter the RRF math, which stays rank-based per the locked Phase 2 ADR. Sort
     order: rrf_score descending, then doc_id ascending. Deterministic.
     """
-    if top_k <= 0:
+    _validate_limit("final_top_k", top_k, maximum=MAX_QUERY_TOP_K)
+    if top_k == 0:
         return []
     lex_map = {doc_id: rank for doc_id, rank in lexical}
     sem_map = {
@@ -333,7 +348,7 @@ def _resolve_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
     row = conn.execute(
         """
         SELECT
-            path, title, domain, metadata_json, index_id, trust_profile,
+            path, title, domain, content_hash, metadata_json, index_id, trust_profile,
             namespace, source_root, source_path, display_path
         FROM documents
         WHERE id = ?
@@ -353,6 +368,7 @@ def _resolve_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
     return {
         "path": row["path"],
         "title": row["title"],
+        "content_hash": _coerce_optional_str(row["content_hash"]),
         "doc_type": _coerce_optional_str(metadata.get("type")),
         "domain": _coerce_optional_str(row["domain"]),
         "status": _coerce_optional_str(metadata.get("status")),
@@ -398,6 +414,17 @@ def run_query(
     results to `expand_depth` hops and appends the walked documents with
     `signal="expanded"`. See DECISIONS.md § 2026-05-20 — Phase 3 graph expansion.
     """
+    for name, value in (
+        ("lexical_top_k", lexical_top_k),
+        ("semantic_top_k", semantic_top_k),
+        ("final_top_k", final_top_k),
+        ("expand_top_k", expand_top_k),
+        ("associate_top_k", associate_top_k),
+        ("associate_seed_k", associate_seed_k),
+    ):
+        _validate_limit(name, value, maximum=MAX_QUERY_TOP_K)
+    _validate_limit("expand_depth", expand_depth, maximum=MAX_EXPAND_DEPTH)
+
     query_scope_warning = classify_query_scope(query_text)
     try:
         lexical = fetch_lexical_ranking(conn, query_text, top_k=lexical_top_k)
@@ -448,6 +475,7 @@ def run_query(
                 source_root=resolved["source_root"],
                 source_path=resolved["source_path"],
                 display_path=resolved["display_path"],
+                content_hash=resolved["content_hash"],
                 signal=_attribute_signal(lex_rank, sem_rank),
                 rrf_score=round(rrf_score, 6),
                 lexical_rank=lex_rank,
@@ -517,7 +545,9 @@ def associate_results(
     Seeds are the pre-expand Phase 2 rows only (ADR-034). Association is
     append-only: rows use signal=associated, rrf_score=0, association_depth=1.
     """
-    if top_k <= 0 or not phase_2_results:
+    _validate_limit("associate_top_k", top_k, maximum=MAX_QUERY_TOP_K)
+    _validate_limit("associate_seed_k", seed_k, maximum=MAX_QUERY_TOP_K)
+    if top_k == 0 or seed_k == 0 or not phase_2_results:
         return []
     if query_scope_warning is None:
         query_scope_warning = phase_2_results[0].query_scope_warning
@@ -538,9 +568,8 @@ def associate_results(
             seed_text = format_query_text(spec, seed_text, template=embed_template)
         raw = _encode_without_progress(embedder, [seed_text])
         query_embedding = [float(x) for x in raw[0]]
-        semantic = fetch_semantic_ranking(
-            conn, query_embedding, top_k=top_k + len(seen)
-        )
+        candidate_k = min(MAX_QUERY_TOP_K, top_k + len(seen))
+        semantic = fetch_semantic_ranking(conn, query_embedding, top_k=candidate_k)
         for doc_id, chunk_index, _rank, distance in semantic:
             if doc_id in seen:
                 continue
@@ -563,6 +592,7 @@ def associate_results(
                     source_root=resolved["source_root"],
                     source_path=resolved["source_path"],
                     display_path=resolved["display_path"],
+                    content_hash=resolved["content_hash"],
                     signal="associated",
                     rrf_score=0.0,
                     lexical_rank=None,
@@ -601,7 +631,9 @@ def expand_results(
     Dangling targets terminate the walk at their depth. Documents already in the
     seed set are not re-emitted. Final sort: (expansion_depth, doc_id, chunk_index).
     """
-    if depth <= 0 or not phase_2_results:
+    _validate_limit("expand_depth", depth, maximum=MAX_EXPAND_DEPTH)
+    _validate_limit("expand_top_k", expand_top_k, maximum=MAX_QUERY_TOP_K)
+    if depth == 0 or expand_top_k == 0 or not phase_2_results:
         return []
     if query_scope_warning is None:
         query_scope_warning = phase_2_results[0].query_scope_warning
@@ -641,6 +673,7 @@ def expand_results(
                         source_root=resolved["source_root"],
                         source_path=resolved["source_path"],
                         display_path=resolved["display_path"],
+                        content_hash=resolved["content_hash"],
                         signal="expanded",
                         rrf_score=0.0,
                         lexical_rank=None,
@@ -698,3 +731,130 @@ def list_neighbors(
         ]
     except sqlite3.Error as e:
         raise QueryError(f"neighbors lookup failed: {e}") from e
+
+
+def apply_dual_gate_governance(
+    results: list[QueryResult],
+    max_seats: int = 3,
+    max_chars: int = 4000,
+    quiet_keywords: list[str] | None = None,
+    *,
+    eligibility_manifest: dict[str, Any] | None,
+) -> list[QueryResult]:
+    """Return manifest-approved, seat-bounded context without an ungated fallback.
+
+    This is a consumer-side boundary over already-ranked retrieval nominations.
+    It does not alter ``run_query`` ranking or make a truth/compliance claim.
+    ``quiet_keywords`` remains a caller-directed ordering input, never a way to
+    admit a result that lacks C-0 membership.
+    """
+    manifest_run_id, approved = _approved_manifest_records(eligibility_manifest)
+    if max_seats < 0 or max_chars < 0:
+        raise QueryError("max_seats and max_chars must be non-negative")
+    if max_seats == 0:
+        return []
+
+    eligible: list[QueryResult] = []
+    for result in results:
+        approved_record = approved.get(result.doc_id)
+        if approved_record is None:
+            continue
+        source_path = _result_source_path(result)
+        content_hash = _indexed_hash(result.content_hash)
+        if source_path != approved_record["path"]:
+            continue
+        if content_hash != approved_record["sha256"]:
+            continue
+        eligible.append(result.model_copy(update={"eligibility_run_id": manifest_run_id}))
+
+    if quiet_keywords and len(eligible) > max_seats:
+        shortlisted = eligible[:max_seats]
+        for candidate in eligible[max_seats:]:
+            candidate_text = (candidate.chunk_text or "").lower()
+            if any(keyword.lower() in candidate_text for keyword in quiet_keywords):
+                shortlisted[-1] = candidate
+                break
+    else:
+        shortlisted = eligible[:max_seats]
+
+    governed: list[QueryResult] = []
+    current_chars = 0
+    for item in shortlisted:
+        passage = item.chunk_text or ""
+        if current_chars + len(passage) <= max_chars:
+            governed.append(item)
+            current_chars += len(passage)
+        else:
+            remaining = max_chars - current_chars
+            if remaining > 100:
+                governed.append(item.model_copy(update={"chunk_text": passage[:remaining] + "..."}))
+            break
+    return governed
+
+
+def _normalized_path(path: str) -> str:
+    """Normalize a source path for manifest membership comparison only."""
+    normalized = path.replace("\\", "/")
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    return normalized.rstrip("/")
+
+
+def _result_source_path(result: QueryResult) -> str | None:
+    if result.source_root and result.source_path:
+        return _normalized_path(f"{result.source_root}/{result.source_path}")
+    if result.path:
+        return _normalized_path(result.path)
+    return None
+
+
+def _indexed_hash(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized.startswith("sha256:"):
+        normalized = normalized.removeprefix("sha256:")
+    return normalized if _SHA256_HEX.fullmatch(normalized) else None
+
+
+def _approved_manifest_records(
+    eligibility_manifest: dict[str, Any] | None,
+) -> tuple[str, dict[str, dict[str, str]]]:
+    """Validate the C-0 public boundary contract and index it by document id."""
+    if not isinstance(eligibility_manifest, dict):
+        raise QueryError("governed context requires a C-0 eligibility manifest")
+    run_id = eligibility_manifest.get("eligibility_run_id")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise QueryError("C-0 eligibility manifest has no eligibility_run_id")
+    inventory = eligibility_manifest.get("approved_inventory")
+    if not isinstance(inventory, list) or not inventory:
+        raise QueryError("C-0 eligibility manifest approved_inventory is empty")
+
+    records: dict[str, dict[str, str]] = {}
+    for index, raw_record in enumerate(inventory):
+        if not isinstance(raw_record, dict):
+            raise QueryError(f"C-0 approved record {index} is not an object")
+        doc_id = raw_record.get("doc_id")
+        path = raw_record.get("path")
+        sha256 = raw_record.get("sha256")
+        status = raw_record.get("status")
+        if not isinstance(doc_id, str) or not doc_id:
+            raise QueryError(f"C-0 approved record {index} has no doc_id")
+        if doc_id in records:
+            raise QueryError(f"C-0 approved inventory has duplicate doc_id '{doc_id}'")
+        if not isinstance(path, str) or not path:
+            raise QueryError(f"C-0 approved record '{doc_id}' has no source path")
+        if not isinstance(sha256, str) or not _SHA256_TAGGED.fullmatch(sha256):
+            raise QueryError(
+                f"C-0 approved record '{doc_id}' has malformed sha256; "
+                "require sha256:<64 lowercase hex>"
+            )
+        if status not in ("Approved", "Effective"):
+            raise QueryError(
+                f"C-0 approved record '{doc_id}' has invalid status '{status}'"
+            )
+        records[doc_id] = {
+            "path": _normalized_path(path),
+            "sha256": sha256.removeprefix("sha256:"),
+        }
+    return run_id.strip(), records

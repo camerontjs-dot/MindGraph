@@ -4,6 +4,108 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-08-04 — Caller-declared daemon scopes
+
+**Status:** Accepted; shipped.
+
+**Context:** The shared server already accepted an arbitrary
+`{name: (connection, trust_profile)}` mapping, but the CLI hard-coded exactly
+two scopes named `knowledge` and `projects`, pointed at fixed default database
+paths, with fixed trust profile labels. That lifecycle split is one vault's
+model, not a property of the engine. Anyone else running the daemon inherited
+scope names that did not describe their own material, and had no way to serve
+one index, or three.
+
+**Decision:** Add a repeatable `--scope` option to `serve-daemon` and
+`daemon-start`, taking `NAME=PATH` or `NAME:TRUST_PROFILE=PATH`. The spec splits
+on the first `=` only, so database paths may contain `=` and `:`. Trust profile
+defaults to the scope name. Any number of scopes may be declared. Passing any
+`--scope` replaces the default pair entirely.
+
+Keep `--knowledge-db` and `--projects-db` as a documented shorthand for the
+two-index split, with their existing defaults and trust profile labels
+unchanged, so installed deployments and process supervisors keep working without
+edits.
+
+**Why:** Scope naming is a deployment decision, not an engine decision. The
+server was already general; only the command line encoded the assumption.
+Making the shorthand an alias rather than the primitive keeps one code path.
+
+**Consequences:** Invoking the daemon without `--scope` produces byte-identical
+behavior to before: scopes `knowledge` (`durable_knowledge`) and `projects`
+(`project_status`). Validation errors for malformed and duplicate specs are
+raised before the daemon is spawned, so `daemon-start` fails fast rather than
+leaving a dead PID file. The unknown-scope error message lists the caller's own
+declared names.
+
+**Rejected alternatives:** A separate config file format for scope declaration;
+inferring scope names from database filenames; changing the default scope names
+or database paths, which would break installed deployments; or leaving the
+shorthand as the only supported shape and documenting the limitation.
+
+---
+
+## 2026-08-03 — Explicit-scope loopback Streamable HTTP daemon
+
+**Status:** Accepted after workbench verification, then promoted into the
+operational package on 2026-08-03. Activation and live supervision remain
+separate operator decisions.
+
+**Decision:** Add a shared FastMCP Streamable HTTP server configured on
+loopback, with explicit `knowledge` (`durable_knowledge`) and `projects`
+(`project_status`) scope selection. Every daemon response names the selected
+scope and trust profile; no call queries or reranks both stores. Open both
+indexes read-only and share one embedder. Preserve the existing one-database
+stdio server and its default list-shaped query and neighbor results unchanged.
+Provide an official MCP SDK stdio server/client proxy and PID-file lifecycle
+control with caller-configurable state paths.
+
+**Why:** Process sharing must not erase lifecycle trust or break installed
+stdio callers. SDK transports and session initialization are safer than a
+hand-written JSON-RPC bridge. Explicit state paths keep supervision inspectable
+and tests away from live state.
+
+**Consequences:** The shared transport is loopback-only and has no auto-start,
+hot reload, authentication, launchd integration, or benchmark claim. Re-ingest
+does not hot-reload a running daemon. The single-database stdio server remains
+the compatibility path and is unchanged.
+
+**Rejected alternatives:** binding all interfaces; silently querying both
+indexes; returning unlabelled daemon lists; replacing `serve-mcp`; hand-rolling
+JSON-RPC over HTTP; or testing against live state under `~/.mindgraph`.
+
+---
+
+## 2026-07-27 — Separable C-0 filtering and context allocation (MainFrame ADR-047)
+
+**Status:** Accepted; workbench implementation pending.
+
+**Decision:** Split `apply_dual_gate_governance` into two behaviour-preserving primitives — `_filter_by_c0_eligibility(results, manifest)` (manifest validation, document ID / resolved path / content-hash matching, and attachment of the consumed eligibility run ID) and `_allocate_context_budget(results, max_seats, max_chars, quiet_keywords)` (seat shortlist, the `quiet_keywords` swap heuristic, and the character budget with its truncation rule). Rewrite the existing helper as the composition of the two, keeping its name, signature, defaults, and behaviour unchanged. Expose two new entry points: `filter_by_c0_eligibility` (no seat or character cap) and `allocate_ungoverned_context` (no manifest parameter). The latter requires a keyword-only `evaluation_use_only: Literal[True]` with no default, refuses an `eligibility_manifest` keyword, never sets `eligibility_run_id`, and stays out of `__all__`, the CLI, and the MCP surface.
+
+**Why:** The dual-gate confirmatory protocol measures two apparatus independently — C-0 source eligibility and Speaker context allocation — across baseline, C-0 only, Speaker only, and both. The combined helper made the Speaker-only arm unreachable (it refuses to run without a manifest, and filters before seating) and reduced the C-0-only arm to setting seat and character limits high enough to "effectively disable" them. That is a parameter choice, not an absent step, so a measured difference could not be attributed to a specific gate. Each arm must differ by the presence or absence of a step.
+
+Allocation is subtractive: `allocate(results, …) ⊆ results`. It cannot admit a source that ungated `run_query` did not already return, so exposing it adds no retrieval reach beyond the existing baseline path. The real risk is misinterpretation — a caller reading "allocated" as "governed" — which the naming, the explicit acknowledgement argument, and the null-provenance assertion address.
+
+**Consequences:** This authorizes measurement only. Promoting ungoverned allocation to any product or default path is a separate decision needing its own evidence; a passing 2×2 arm is not that evidence. `apply_dual_gate_governance` gains no new behaviour and callers are unaffected. Error precedence is preserved deliberately: manifest validation still runs before the negative-argument check and the `max_seats == 0` early return, so manifest errors continue to win. The existing governance tests must pass **unmodified**; they are the regression proof, and adapting them would void it.
+
+**Rejected alternatives:** Approximating C-0-only by neutralising seat and character limits; reimplementing the allocator rather than extracting it verbatim; giving `evaluation_use_only` a default or accepting it positionally; adding an automatic ungated fallback inside the governed helper; or exposing the allocator through the CLI or MCP surface.
+
+---
+
+## 2026-07-26 — Governed context requires explicit C-0 manifest membership
+
+**Status:** Accepted for the workbench implementation gate.
+
+**Decision:** Keep ordinary `run_query` as the explicit ungated retrieval baseline. Make the separate governed-context helper require a C-0 eligibility manifest with a run identity and approved inventory; it may pass a result only when the result's document ID, resolved source path, and indexed content SHA-256 match one unique approved record. The helper stamps the consumed eligibility run ID onto the returned rows. Missing, empty, malformed, duplicate, mismatched, or status-only inputs produce no governed context rather than an eligibility fallback.
+
+**Why:** Frontmatter status is descriptive source metadata, not a current eligibility decision. A status-only filter and its fallback could admit a source that C-0 quarantined or a source whose contents changed after approval. Exact manifest membership makes the control boundary auditable while leaving MindGraph's ranking and default retrieval contract untouched.
+
+**Consequences:** This is an additive consumer boundary, not a database migration, default CLI/MCP behavior change, or a retrieval-quality result. Callers that need governed context must provide a current manifest; callers intentionally running a baseline use `run_query` without this helper. Benefit must be measured separately on a frozen corpus with preregistered held-out queries.
+
+**Rejected alternatives:** Filtering by `status` alone; falling back to all results when no approved status appears; importing the apparatus project into the engine; or claiming the boundary establishes answer quality or regulatory compliance.
+
+---
+
 ## 2026-07-08 — Opt-in CLI/MCP envelope with legacy list compatibility
 
 **Status:** Accepted. Workbench reconciled with root operational package on

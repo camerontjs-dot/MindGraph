@@ -1,8 +1,12 @@
 """Embedder registry and text formatting tests."""
 
+import sys
+import types
+
 import pytest
 
 from mindgraph import embedders
+from mindgraph.exceptions import EmbeddingError
 
 
 def test_resolve_default_embedder():
@@ -40,3 +44,39 @@ def test_mainframe_template_prefixes():
     assert "[domain=regulated-systems]" in passage
     assert "[type=note]" in passage
     assert "GxP Note" in passage
+
+
+def test_load_sentence_embedder_uses_local_files_only(monkeypatch):
+    """Loader must resolve models from the local cache only (no hub metadata)."""
+    captured: dict[str, object] = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name_or_path, *args, **kwargs):
+            captured["model_name_or_path"] = model_name_or_path
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+    spec = embedders.resolve_embedder("minilm")
+    model = embedders.load_sentence_embedder(spec)
+
+    assert isinstance(model, FakeSentenceTransformer)
+    assert captured["model_name_or_path"] == "all-MiniLM-L6-v2"
+    assert captured["kwargs"].get("local_files_only") is True
+
+
+def test_load_sentence_embedder_missing_cache_raises_embedding_error(monkeypatch):
+    class BoomSentenceTransformer:
+        def __init__(self, *args, **kwargs):
+            raise OSError("model not found in local cache")
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = BoomSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+    spec = embedders.resolve_embedder("minilm")
+    with pytest.raises(EmbeddingError, match="local_files_only=True"):
+        embedders.load_sentence_embedder(spec)

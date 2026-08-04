@@ -342,6 +342,30 @@ def test_ingest_empty_directory(tmp_path, db_path, fake_embedder):
     }
 
 
+def test_ingest_prunes_database_when_last_source_is_deleted(
+    tmp_path, db_path, fake_embedder
+):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    only = notes / "only.md"
+    only.write_text("The final indexed note.\n")
+
+    db.init_db(db_path).close()
+    assert cli._ingest_directory(notes, db_path)["ingested"] == 1
+    only.unlink()
+
+    stats = cli._ingest_directory(notes, db_path)
+    assert stats["total"] == 0
+    assert stats["pruned"] == 1
+    conn = db.get_db(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_ingest_prunes_deleted_file(tmp_path, db_path, fake_embedder):
     notes = tmp_path / "notes"
     notes.mkdir()
