@@ -1,13 +1,14 @@
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
 import typer
 
-from mindgraph import db, embedders, mcp_server, parser
+from mindgraph import daemon, db, embedders, mcp_proxy, mcp_server, parser
 from mindgraph import query as query_mod
 from mindgraph.exceptions import IngestionError, MindgraphError
 from mindgraph import intent as intent_mod
@@ -872,6 +873,81 @@ def serve_mcp(
     finally:
         if conn is not None:
             conn.close()
+
+
+@app.command("serve-daemon")
+def serve_daemon(
+    knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
+    projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    path: str = typer.Option("/mcp", "--path"),
+    embedder: str | None = typer.Option(None, "--embedder"),
+):
+    """Run the explicit-scope shared MCP server in the foreground."""
+    conns = []
+    try:
+        knowledge = mcp_server.open_database_readonly(knowledge_db)
+        projects = mcp_server.open_database_readonly(projects_db)
+        conns.extend((knowledge, projects))
+        spec = embedders.resolve_embedder(embedder)
+        server = mcp_server.create_shared_server(
+            {"knowledge": (knowledge, "durable_knowledge"), "projects": (projects, "project_status")},
+            _load_embedder(spec.key), host=host, port=port, path=path, embedder_spec=spec,
+        )
+        mcp_server.run_streamable_http(server)
+    except MindgraphError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    finally:
+        for conn in conns:
+            conn.close()
+
+
+@app.command("mcp-proxy")
+def mcp_proxy_command(url: str = typer.Option("http://127.0.0.1:8000/mcp", "--url")):
+    """Proxy stdio MCP to the shared Streamable HTTP daemon."""
+    try:
+        mcp_proxy.run_proxy_sync(url)
+    except Exception as exc:
+        typer.echo(f"MCP proxy failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("daemon-status")
+def daemon_status(state_dir: Path = typer.Option(Path("~/.mindgraph/run").expanduser(), "--state-dir")):
+    typer.echo(json.dumps(daemon.status(state_dir)))
+
+
+@app.command("daemon-start")
+def daemon_start(
+    state_dir: Path = typer.Option(Path("~/.mindgraph/run").expanduser(), "--state-dir"),
+    knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
+    projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    path: str = typer.Option("/mcp", "--path"),
+):
+    """Start the daemon as a visible PID-tracked child process."""
+    command = [
+        sys.executable, "-m", "mindgraph.cli", "serve-daemon",
+        "--knowledge-db", knowledge_db, "--projects-db", projects_db,
+        "--host", host, "--port", str(port), "--path", path,
+    ]
+    typer.echo(json.dumps(daemon.start(state_dir, command)))
+
+
+@app.command("daemon-health")
+def daemon_health(url: str = typer.Option("http://127.0.0.1:8000/health", "--url")):
+    result = daemon.health(url)
+    typer.echo(json.dumps(result))
+    if result.get("status") != "ok":
+        raise typer.Exit(1)
+
+
+@app.command("daemon-stop")
+def daemon_stop(state_dir: Path = typer.Option(Path("~/.mindgraph/run").expanduser(), "--state-dir")):
+    typer.echo(json.dumps(daemon.stop(state_dir)))
 
 
 if __name__ == "__main__":

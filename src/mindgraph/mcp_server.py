@@ -12,6 +12,7 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
+from starlette.responses import JSONResponse
 
 from mindgraph import db
 from mindgraph import query as query_mod
@@ -49,6 +50,26 @@ def open_database(db_path: str) -> sqlite3.Connection:
         raise
     except sqlite3.Error as e:
         raise MCPServerStartupError(f"Failed to open database at {db_path}: {e}") from e
+
+
+def open_database_readonly(db_path: str) -> sqlite3.Connection:
+    """Open a validated SQLite index without allowing persistent writes."""
+    expanded = Path(db_path).expanduser().resolve()
+    if not expanded.exists():
+        raise MCPServerStartupError(f"Database does not exist: {expanded}")
+    try:
+        import sqlite_vec
+
+        conn = sqlite3.connect(f"file:{expanded}?mode=ro", uri=True, timeout=30.0)
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        _validate_schema(conn, str(expanded))
+        return conn
+    except sqlite3.Error as e:
+        raise MCPServerStartupError(f"Failed to open database at {expanded}: {e}") from e
 
 
 def _validate_schema(conn: sqlite3.Connection, db_path: str) -> None:
@@ -189,6 +210,89 @@ def create_server(
 def run_stdio(server: FastMCP) -> None:
     """Run the server on stdio. Stdout is reserved for MCP protocol frames."""
     server.run("stdio")
+
+
+def create_shared_server(
+    scopes: dict[str, tuple[sqlite3.Connection, str]],
+    embedder: query_mod.Embedder,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    path: str = "/mcp",
+    embedder_spec: EmbedderSpec | None = None,
+    embed_template: EmbedTemplate = "none",
+) -> FastMCP:
+    """Create the explicit-scope shared daemon server.
+
+    Results are never blended: every call selects exactly one configured scope
+    and returns its trust profile beside the unchanged result rows.
+    """
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise MCPServerStartupError("shared MCP daemon host must be loopback")
+    if not path.startswith("/"):
+        raise MCPServerStartupError("MCP path must start with '/'")
+    server = FastMCP(
+        "mindgraph-shared",
+        instructions="Select one lifecycle scope. Results are nominations, not verified claims.",
+        host=host,
+        port=port,
+        streamable_http_path=path,
+    )
+
+    def selected(scope: str) -> tuple[sqlite3.Connection, str]:
+        try:
+            return scopes[scope]
+        except KeyError as exc:
+            raise query_mod.QueryError(
+                f"unknown scope: {scope}; choose one of: {', '.join(sorted(scopes))}"
+            ) from exc
+
+    @server.tool(name="query")
+    def scoped_query(question: str, scope: str, final_top_k: int = query_mod.DEFAULT_FINAL_TOP_K) -> CallToolResult:
+        try:
+            conn, trust_profile = selected(scope)
+            formatted = (
+                format_query_text(embedder_spec, question, template=embed_template)
+                if embedder_spec is not None else question
+            )
+            rows = query_mod.run_query(conn, formatted, embedder, final_top_k=final_top_k)
+            return _json_result({
+                "scope": scope,
+                "trust_profile": trust_profile,
+                "results": [row.model_dump() for row in rows],
+            })
+        except MindgraphError as exc:
+            return _tool_error(str(exc))
+
+    @server.tool(name="graph_neighbors")
+    def scoped_neighbors(doc_id: str, scope: str) -> CallToolResult:
+        try:
+            conn, trust_profile = selected(scope)
+            _ensure_document_exists(conn, doc_id)
+            rows = query_mod.list_neighbors(conn, doc_id)
+            return _json_result({
+                "scope": scope,
+                "trust_profile": trust_profile,
+                "results": [row.model_dump() for row in rows],
+            })
+        except MindgraphError as exc:
+            return _tool_error(str(exc))
+
+    @server.custom_route("/health", methods=["GET"])
+    async def health(_request):
+        return JSONResponse({
+            "status": "ok",
+            "scopes": [
+                {"scope": name, "trust_profile": trust}
+                for name, (_conn, trust) in sorted(scopes.items())
+            ],
+        })
+    return server
+
+
+def run_streamable_http(server: FastMCP) -> None:
+    """Run a configured FastMCP server using Streamable HTTP."""
+    server.run("streamable-http")
 
 
 def _ensure_document_exists(conn: sqlite3.Connection, doc_id: str) -> None:

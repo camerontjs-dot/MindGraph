@@ -4,6 +4,58 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-08-05 — Opt-in lease-aware idle exit with serialized proxy wakeup
+
+**Status:** Accepted for promoted root implementation; live activation deferred.
+
+**Decision:** Add an optional idle lifecycle to the shared loopback daemon. An
+idle exit is permitted only after a documented grace with zero in-flight tool
+calls and zero unexpired renewable client leases. The stdio proxy may opt into
+serialized health-checked startup and holds a lease for its lifetime. Health
+reports process identity and lifecycle counters; status combines listener
+health with the standalone PID file, while stop refuses ambiguous PID or
+listener identity. Legacy stdio/list behavior, explicit scope selection,
+loopback binding, and default persistent behavior remain unchanged.
+
+**Supervision boundary:** The current `KeepAlive=true`, `RunAtLoad=true`
+LaunchAgent is incompatible with idle exit and remains untouched by
+implementation/testing. Explicit activation unloads and disables that plist in
+a human-confirmed idle window and writes the proxy opt-in marker. Direct HTTP
+cannot transparently wake a dead endpoint without an additional supervisor or
+socket-activation front door, so it retains a documented manual-start or
+connection-failure boundary.
+
+**Rejected alternatives:** exiting under the current KeepAlive job; using
+process age as idleness; exiting with an in-flight request; assuming an open
+direct HTTP session is a lease; signaling a stale PID blindly; concurrent
+proxy-spawn races; changing defaults; or claiming transparent direct-HTTP wake.
+
+## 2026-08-03 — Explicit-scope loopback Streamable HTTP daemon
+
+**Status:** Accepted for workbench verification only; root promotion deferred.
+
+**Decision:** Add a shared FastMCP Streamable HTTP server configured on
+loopback, with explicit `knowledge` (`durable_knowledge`) and `projects`
+(`project_status`) scope selection. Every daemon response names the selected
+scope and trust profile; no call queries or reranks both stores. Open both
+indexes read-only and share one embedder. Preserve the existing one-database
+stdio server and its default list-shaped query and neighbor results unchanged.
+Provide an official MCP SDK stdio server/client proxy and PID-file lifecycle
+control with caller-configurable state paths.
+
+**Why:** Process sharing must not erase lifecycle trust or break installed
+stdio callers. SDK transports and session initialization are safer than a
+hand-written JSON-RPC bridge. Explicit state paths keep supervision inspectable
+and tests away from live state.
+
+**Consequences:** This workbench slice is loopback-only and has no auto-start,
+hot reload, authentication, launchd integration, or benchmark claim. Root
+wrappers and `.mcp.json` remain unchanged pending a separate promotion gate.
+
+**Rejected alternatives:** binding all interfaces; silently querying both
+indexes; returning unlabelled daemon lists; replacing `serve-mcp`; hand-rolling
+JSON-RPC over HTTP; or testing against `~/.mindgraph`.
+
 ## 2026-07-27 — Separable C-0 filtering and context allocation (MainFrame ADR-047)
 
 **Status:** Accepted; workbench implementation pending.
