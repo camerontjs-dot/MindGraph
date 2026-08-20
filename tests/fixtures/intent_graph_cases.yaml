@@ -1,5 +1,5 @@
-source_ref: &source_ref "plan://30_projects/mindgraph/plans/mindgraph-remodel-plan.md"
-reviewer: &reviewer "operator:cameron"
+source_ref: &source_ref "plan://plans/retrieval-remodel.md"
+reviewer: &reviewer "operator:example"
 
 documents:
   phase1:
@@ -186,7 +186,7 @@ documents:
           scope: "project_status"
           all_terms: ["project", "status"]
           any_terms: ["review", "next"]
-        source_refs: ["decision://30_projects/mindgraph/decisions.md"]
+        source_refs: ["decision://DECISIONS.md"]
 
   predecessor:
     schema_version: "1"

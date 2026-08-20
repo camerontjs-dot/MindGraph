@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+from mindgraph.exceptions import EmbeddingError
+
 EmbedTemplate = Literal["none", "mainframe"]
 
 
@@ -62,7 +64,7 @@ def resolve_embedder(name: str | None = None) -> EmbedderSpec:
     key = raw.lower()
     if key not in _REGISTRY:
         known = ", ".join(sorted(_REGISTRY))
-        raise ValueError(f"Unknown embedder {raw!r}; known keys: {known}")
+        raise EmbeddingError(f"Unknown embedder {raw!r}; known keys: {known}")
     return _REGISTRY[key]
 
 
@@ -74,7 +76,7 @@ def resolve_embed_template(name: str | None = None) -> EmbedTemplate:
         return "none"
     if raw == "mainframe":
         return "mainframe"
-    raise ValueError(
+    raise EmbeddingError(
         f"Unknown embed template {raw!r}; known: none, mainframe"
     )
 
@@ -92,7 +94,7 @@ def load_sentence_embedder(spec: EmbedderSpec):
     try:
         return SentenceTransformer(spec.model_id, local_files_only=True)
     except Exception as exc:
-        raise RuntimeError(
+        raise EmbeddingError(
             f"Failed to load cached embedding model {spec.model_id!r} with "
             f"local_files_only=True ({type(exc).__name__}: {exc}). "
             "Cache the model once while online, for example:\n"

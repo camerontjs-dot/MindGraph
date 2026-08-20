@@ -3,6 +3,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 Signal = Literal["lexical", "semantic", "fused", "expanded", "associated"]
+#: How far a document may be trusted as a source, independent of how well its
+#: text matches a query. See `query._citation_assessment`.
+CitationClass = Literal["citable", "unverified", "not_citable"]
 QueryScopeIntent = Literal["inbox_state", "live_state", "project_status"]
 
 
@@ -59,11 +62,15 @@ class QueryResult(BaseModel):
     index_id: str | None = None
     trust_profile: str | None = None
     namespace: str | None = None
-    #: Absolute ingest root on the indexing machine. Excluded from
-    #: serialization: it is an internal join key and the only field here that is
-    #: definitionally a host path. `path`, `source_path`, and `display_path` are
-    #: relative and already locate the document. Query-time governance reads it
-    #: in-process as an attribute, which `exclude` does not affect.
+    #: Absolute ingest root on the indexing machine, e.g. `/home/me/notes`.
+    #: Excluded from serialization on purpose: it is an internal join key, and
+    #: it is the only field on this model that is definitionally a host path.
+    #: `path`, `source_path`, and `display_path` are all relative and already
+    #: tell a consumer where the document lives, so nothing downstream needs
+    #: the root. Query-time governance reads it in-process as an attribute
+    #: (see `_result_source_path`), which `exclude` does not affect.
+    #: Excluding it here rather than at each `model_dump()` call site means a
+    #: serialization path added later cannot reintroduce the leak.
     source_root: str | None = Field(default=None, exclude=True)
     source_path: str | None = None
     display_path: str | None = None
@@ -75,7 +82,22 @@ class QueryResult(BaseModel):
     semantic_rank: int | None
     semantic_distance: float | None = None
     weak_fit: bool = False
+    #: Machine-readable citability, so a consumer can partition on trust
+    #: without parsing `provenance_warning`. Ranking is trust-blind by design —
+    #: a fabricated document is written to be on topic and scores accordingly —
+    #: so this is the field that keeps a quarantined top hit out of a citable
+    #: result set. `unverified` is a nomination, not a bar.
+    citation_class: CitationClass = "citable"
     query_scope_warning: QueryScopeWarning | None = None
+    #: Set when the source document is quarantined or otherwise not citable.
+    #: Travels on EVERY chunk, which is the whole point: on 2026-08-09, 103
+    #: captures with fabricated citations were found in `10_knowledge/`. Each
+    #: carried a `needs-audit` tag and later a body banner — but a banner only
+    #: appears in chunk 0, and a frontmatter tag never appears in chunk text at
+    #: all. A query landing on chunk 3 returned authoritative-looking prose with
+    #: no indication the source did not exist. A trust flag that is invisible at
+    #: query time is not a control.
+    provenance_warning: str | None = None
     chunk_text: str
     expansion_depth: int = 0
     association_depth: int = 0

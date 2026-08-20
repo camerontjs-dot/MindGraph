@@ -6,6 +6,7 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ## 2026-08-05 — Opt-in lease-aware idle exit with serialized proxy wakeup
 
+
 **Status:** Accepted for promoted root implementation; live activation deferred.
 
 **Decision:** Add an optional idle lifecycle to the shared loopback daemon. An
@@ -30,9 +31,96 @@ process age as idleness; exiting with an in-flight request; assuming an open
 direct HTTP session is a lease; signaling a stale PID blindly; concurrent
 proxy-spawn races; changing defaults; or claiming transparent direct-HTTP wake.
 
+## 2026-08-04 — Configurable scope-warning vocabulary
+
+
+**Status:** Accepted; shipped.
+
+**Context:** `classify_query_scope` drives the `query_scope_warning` field, and
+its trigger terms were four module-level compiled regexes. The term lists encode
+one vault's lifecycle vocabulary, including folder names like `00_inbox` and
+`30_projects` and personal domain words like `job hunt`, `finance`, and
+`calendar`. Anyone else running the engine got warnings tuned to material they
+do not have, and no way to retune without editing installed source.
+
+**Decision:** Express the four term lists as data on a frozen `ScopeVocabulary`
+dataclass, compiled on demand and cached per instance. `classify_query_scope`
+takes an optional vocabulary; passing none resolves `active_scope_vocabulary()`,
+which reads a JSON file named by `MINDGRAPH_SCOPE_VOCABULARY` and otherwise
+returns the defaults. Absent keys inherit defaults, so one branch can be retuned
+without restating the rest. An empty term list disables that branch.
+
+Terms remain regular-expression fragments rather than literals, because the
+shipped defaults already rely on that (`captures?`, `blocked?`, `state\.md`).
+Escaping them would silently change matching.
+
+**Why:** Which words mean "current state" is a property of a corpus, not of the
+engine. The heuristic is sound; only its vocabulary was assumed. An environment
+variable reaches the CLI, the stdio server, and the daemon without threading a
+parameter through every call path.
+
+**Consequences:** Default behavior is unchanged. The four compiled patterns are
+asserted byte-identical to the previous hard-coded regexes by test, so the
+defaults cannot drift silently. The `live_state` branch still requires a hit in
+both the freshness and live-state lists. Malformed vocabulary files fail with a
+named error rather than falling back silently.
+
+**Rejected alternatives:** Escaping terms as literals, which would change
+matching for the shipped defaults; genericizing the defaults by dropping the
+personal domain terms, which would change warning behavior for existing
+deployments; a CLI flag alone, which would not reach the daemon and MCP paths;
+or leaving the vocabulary hard-coded and documenting the limitation.
+
+---
+
+## 2026-08-04 — Caller-declared daemon scopes
+
+
+**Status:** Accepted; shipped.
+
+**Context:** The shared server already accepted an arbitrary
+`{name: (connection, trust_profile)}` mapping, but the CLI hard-coded exactly
+two scopes named `knowledge` and `projects`, pointed at fixed default database
+paths, with fixed trust profile labels. That lifecycle split is one vault's
+model, not a property of the engine. Anyone else running the daemon inherited
+scope names that did not describe their own material, and had no way to serve
+one index, or three.
+
+**Decision:** Add a repeatable `--scope` option to `serve-daemon` and
+`daemon-start`, taking `NAME=PATH` or `NAME:TRUST_PROFILE=PATH`. The spec splits
+on the first `=` only, so database paths may contain `=` and `:`. Trust profile
+defaults to the scope name. Any number of scopes may be declared. Passing any
+`--scope` replaces the default pair entirely.
+
+Keep `--knowledge-db` and `--projects-db` as a documented shorthand for the
+two-index split, with their existing defaults and trust profile labels
+unchanged, so installed deployments and process supervisors keep working without
+edits.
+
+**Why:** Scope naming is a deployment decision, not an engine decision. The
+server was already general; only the command line encoded the assumption.
+Making the shorthand an alias rather than the primitive keeps one code path.
+
+**Consequences:** Invoking the daemon without `--scope` produces byte-identical
+behavior to before: scopes `knowledge` (`durable_knowledge`) and `projects`
+(`project_status`). Validation errors for malformed and duplicate specs are
+raised before the daemon is spawned, so `daemon-start` fails fast rather than
+leaving a dead PID file. The unknown-scope error message lists the caller's own
+declared names.
+
+**Rejected alternatives:** A separate config file format for scope declaration;
+inferring scope names from database filenames; changing the default scope names
+or database paths, which would break installed deployments; or leaving the
+shorthand as the only supported shape and documenting the limitation.
+
+---
+
 ## 2026-08-03 — Explicit-scope loopback Streamable HTTP daemon
 
-**Status:** Accepted for workbench verification only; root promotion deferred.
+
+**Status:** Accepted after workbench verification, then promoted into the
+operational package on 2026-08-03. Activation and live supervision remain
+separate operator decisions.
 
 **Decision:** Add a shared FastMCP Streamable HTTP server configured on
 loopback, with explicit `knowledge` (`durable_knowledge`) and `projects`
@@ -48,15 +136,19 @@ stdio callers. SDK transports and session initialization are safer than a
 hand-written JSON-RPC bridge. Explicit state paths keep supervision inspectable
 and tests away from live state.
 
-**Consequences:** This workbench slice is loopback-only and has no auto-start,
-hot reload, authentication, launchd integration, or benchmark claim. Root
-wrappers and `.mcp.json` remain unchanged pending a separate promotion gate.
+**Consequences:** The shared transport is loopback-only and has no auto-start,
+hot reload, authentication, launchd integration, or benchmark claim. Re-ingest
+does not hot-reload a running daemon. The single-database stdio server remains
+the compatibility path and is unchanged.
 
 **Rejected alternatives:** binding all interfaces; silently querying both
 indexes; returning unlabelled daemon lists; replacing `serve-mcp`; hand-rolling
-JSON-RPC over HTTP; or testing against `~/.mindgraph`.
+JSON-RPC over HTTP; or testing against live state under `~/.mindgraph`.
+
+---
 
 ## 2026-07-27 — Separable C-0 filtering and context allocation (MainFrame ADR-047)
+
 
 **Status:** Accepted; workbench implementation pending.
 
@@ -66,7 +158,7 @@ JSON-RPC over HTTP; or testing against `~/.mindgraph`.
 
 Allocation is subtractive: `allocate(results, …) ⊆ results`. It cannot admit a source that ungated `run_query` did not already return, so exposing it adds no retrieval reach beyond the existing baseline path. The real risk is misinterpretation — a caller reading "allocated" as "governed" — which the naming, the explicit acknowledgement argument, and the null-provenance assertion address.
 
-**Consequences:** This authorizes measurement only. Promoting ungoverned allocation to any product or default path is a separate decision needing its own evidence; a passing 2×2 arm is not that evidence. `apply_dual_gate_governance` gains no new behaviour and callers are unaffected. Error precedence is preserved deliberately: manifest validation still runs before the negative-argument check and the `max_seats == 0` early return, so manifest errors continue to win. The existing governance tests (five test functions, six collected cases — one is parametrized) must pass **unmodified**; they are the regression proof, and adapting them would void it. Work proceeds workbench-first, then a separate root-promotion packet written once the workbench diff is real rather than predicted.
+**Consequences:** This authorizes measurement only. Promoting ungoverned allocation to any product or default path is a separate decision needing its own evidence; a passing 2×2 arm is not that evidence. `apply_dual_gate_governance` gains no new behaviour and callers are unaffected. Error precedence is preserved deliberately: manifest validation still runs before the negative-argument check and the `max_seats == 0` early return, so manifest errors continue to win. The existing governance tests must pass **unmodified**; they are the regression proof, and adapting them would void it.
 
 **Rejected alternatives:** Approximating C-0-only by neutralising seat and character limits; reimplementing the allocator rather than extracting it verbatim; giving `evaluation_use_only` a default or accepting it positionally; adding an automatic ungated fallback inside the governed helper; or exposing the allocator through the CLI or MCP surface.
 
@@ -74,19 +166,21 @@ Allocation is subtractive: `allocate(results, …) ⊆ results`. It cannot admit
 
 ## 2026-07-26 — Governed context requires explicit C-0 manifest membership
 
+
 **Status:** Accepted for the workbench implementation gate.
 
 **Decision:** Keep ordinary `run_query` as the explicit ungated retrieval baseline. Make the separate governed-context helper require a C-0 eligibility manifest with a run identity and approved inventory; it may pass a result only when the result's document ID, resolved source path, and indexed content SHA-256 match one unique approved record. The helper stamps the consumed eligibility run ID onto the returned rows. Missing, empty, malformed, duplicate, mismatched, or status-only inputs produce no governed context rather than an eligibility fallback.
 
 **Why:** Frontmatter status is descriptive source metadata, not a current eligibility decision. A status-only filter and its fallback could admit a source that C-0 quarantined or a source whose contents changed after approval. Exact manifest membership makes the control boundary auditable while leaving MindGraph's ranking and default retrieval contract untouched.
 
-**Consequences:** This is an additive consumer boundary, not a database migration, default CLI/MCP behavior change, C-B bundle, or RAG-quality result. Callers that need governed context must provide a current manifest; callers intentionally running a baseline use `run_query` without this helper. The evaluation project must measure benefit separately on a frozen corpus and preregistered held-out queries.
+**Consequences:** This is an additive consumer boundary, not a database migration, default CLI/MCP behavior change, or a retrieval-quality result. Callers that need governed context must provide a current manifest; callers intentionally running a baseline use `run_query` without this helper. Benefit must be measured separately on a frozen corpus with preregistered held-out queries.
 
 **Rejected alternatives:** Filtering by `status` alone; falling back to all results when no approved status appears; importing the apparatus project into the engine; or claiming the boundary establishes answer quality or regulatory compliance.
 
 ---
 
 ## 2026-07-08 — Opt-in CLI/MCP envelope with legacy list compatibility
+
 
 **Status:** Accepted. Workbench reconciled with root operational package on
 2026-07-09 (union merge: envelope + workbench-only pruning tests retained).
@@ -136,6 +230,7 @@ or removing `--no-intent` from the compatibility contract.
 ---
 
 ## 2026-06-30 — Additive deterministic router core and grouped retrieval envelope
+
 
 **Status:** Accepted for the first Phase 3 implementation gate in the
 workbench. Operational intent installation and MainFrame integration remain
@@ -187,6 +282,7 @@ cancellation that the runtime cannot enforce.
 ---
 
 ## 2026-06-29 — Separate V1 intent graph compiler and read-only traversal
+
 
 **Status:** Accepted for Phase 2 implementation in the workbench. Runtime
 routing and operational installation remain deferred.
@@ -251,6 +347,7 @@ authority; and writing directly to the operational path during compilation.
 
 ## 2026-06-19 — Query-time semantic association (MainFrame ADR-034)
 
+
 **Status:** Accepted; shipped in MainFrame commit `1292c22`.
 
 **Context:** MindGraph uses semantic search for query-to-chunk ranking and
@@ -278,6 +375,7 @@ workflow. Offline precomputed semantic edges remain deferred.
 
 ## 2026-06-19 — Hybrid explicit graph and chunk RAG (MainFrame ADR-035)
 
+
 **Status:** Accepted; shipped in MainFrame commit `1292c22`.
 
 **Context:** After dual-channel link fixes and federation research, MainFrame
@@ -302,6 +400,7 @@ design intent until supported by evaluation.
 ---
 
 ## 2026-06-19 — Dual-channel links and canonical slug resolution (MainFrame ADR-033)
+
 
 **Status:** Accepted; shipped in MainFrame commit `6fee787`.
 
@@ -329,6 +428,7 @@ remain explicit future work.
 
 ## 2026-06-19 — Namespaced multi-root ingest and provenance rows
 
+
 **Decision:** MindGraph keeps ordinary `mindgraph ingest <directory>` backward-compatible with path-derived document IDs, but adds `mindgraph ingest-many <manifest>` for multiple Markdown roots that must be indexed as one logical store. Scoped ingest rows carry `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, and `display_path`. When `index_id` and `namespace` are present, document IDs are derived from `index_id + namespace + source_path`, so repeated filenames such as `README.md` remain distinct across project roots.
 
 **Rejected alternatives:** Rejected looping over `ingest <project>` because each run prunes against one root and can erase other projects. Rejected a blended MainFrame graph because the knowledge/project trust boundary belongs above the engine. Rejected frontmatter-only identity because many coordination files share titles and filenames across project folders.
@@ -343,6 +443,7 @@ remain explicit future work.
 
 ## 2026-06-17 — Query scope warnings for lifecycle-state requests
 
+
 **Decision:** `mindgraph query` adds an additive query-scope warning when the query text appears to ask for inbox/routing state, current live state, or project-status state. The warning is copied onto each returned `QueryResult` as `query_scope_warning` and shown once in human-readable CLI output. It does not affect lexical ranking, semantic ranking, RRF fusion, graph expansion, or `weak_fit`.
 
 **Rejected alternatives:** A response-level JSON object would be cleaner for query metadata, but it would break the current `--json` and MCP list-of-results surface. Automatic multi-DB routing is also out of scope for the engine because MindGraph only knows about the SQLite database it was handed, not the caller's lifecycle architecture or which sibling database should be trusted.
@@ -354,6 +455,7 @@ remain explicit future work.
 **Consequences:** Consumers can keep treating `mindgraph query --json` and the MCP `query` tool as a list of result rows. Clients that need response-level metadata can lift `query_scope_warning` from the first row for now. A future lifecycle router can use the same intent labels to select a project-status or live-state database before query execution.
 
 ## 2026-05-19 — MindGraph scope is retrieval, not generation or verification
+
 
 **Decision:** MindGraph is a retrieval engine. It does not generate text, summarize chunks, verify claims, or attempt any answer step on top of the retrieved context. The CLI returns ranked chunks with mechanical signal attribution and stops there.
 
@@ -374,6 +476,7 @@ remain explicit future work.
 ---
 
 ## 2026-05-19 — Single SQLite file with sqlite-vec and FTS5 as the only store
+
 
 **Decision:** MindGraph uses one SQLite database file. Vector similarity comes from the `sqlite-vec` extension. Lexical search comes from SQLite's built-in FTS5 virtual table. Graph edges live in a plain SQLite table. There is no separate vector database, no graph database, and no external index.
 
@@ -405,6 +508,7 @@ Foreign keys are enabled on every connection with `PRAGMA foreign_keys = ON`.
 
 ## 2026-05-19 — Deterministic document ID from path SHA-256, plus content hash for idempotent ingest
 
+
 **Decision:** A document's `id` is the first 16 hex characters of `sha256(relative_path)`. A document's `content_hash` is the full `sha256(file_bytes)`. Re-ingest with an unchanged `content_hash` skips work.
 
 **Reasoning:** Two properties matter. Identity must be stable so links resolve and edges remain valid across runs. Re-ingest must be cheap so the engine can run on a watch loop without redoing embedding work.
@@ -429,6 +533,7 @@ Content hashing gives idempotence. `get_document_hash` returns the stored hash, 
 
 ## 2026-05-19 — Truth / Timeline page-model split on `---` followed by `## Timeline`
 
+
 **Decision:** The body of a parsed document splits into a `truth_text` and an optional `timeline_text`. The split fires on a `---` horizontal rule on its own line, followed (across optional blank lines) by a `## Timeline` heading. The match is case-insensitive on the heading. A plain `---` HR elsewhere in the body does not trigger the split.
 
 **Reasoning:** PKM notes often mix two kinds of content: a stable description of the concept and a dated log of changes or events. Mixing them in one chunkable body produces drift: the embedding of a note about Alice changes every time Alice's timeline grows, even when the description of Alice is identical. Splitting them at parse time keeps the embedding of Truth stable and gives the Timeline its own column for future timeline-aware queries.
@@ -450,6 +555,7 @@ The split rule is conservative on purpose. A reader writing `---` to separate pa
 ---
 
 ## 2026-05-19 — Default embedding is sentence-transformers/all-MiniLM-L6-v2 at 384 dimensions
+
 
 **Decision:** MindGraph embeds chunks with `sentence-transformers/all-MiniLM-L6-v2`. The `vec_chunks` virtual table is dimension-locked at `float[384]` to match. The model loads lazily on the first chunk in an ingest run.
 
@@ -473,6 +579,7 @@ Lazy loading matters because the most common ingest case after the first run is 
 
 ## 2026-05-19 — Graph edge syntax is `[[target]]` and `[[target]] (relationship)`
 
+
 **Decision:** MindGraph extracts graph edges from two link forms inside the Truth text: `[[target]]` produces an edge with `relationship_type = None`, and `[[target]] (relationship)` produces an edge with `relationship_type = "relationship"`. The `target` is normalized to add `.md` when missing.
 
 **Reasoning:** The plain `[[target]]` form is standard across Obsidian, Foam, and similar PKM tools, so vaults written elsewhere work without modification. The `(relationship)` suffix is a lightweight extension that lets a writer declare typed edges without adopting a heavier syntax. The relationship type is free text on purpose so that vault authors are not forced into a controlled vocabulary.
@@ -494,6 +601,7 @@ The link regex deliberately rejects nested brackets so that a malformed `[[link[
 ---
 
 ## 2026-05-19 — Phase 2 query path: lexical plus semantic plus Reciprocal Rank Fusion, with graph as a sibling lookup
+
 
 **Decision:** The Phase 2 `mindgraph query` command runs two retrieval signals over the existing SQLite store and fuses them with Reciprocal Rank Fusion. Lexical retrieval uses FTS5 BM25 over the `documents_fts` table. Semantic retrieval uses `sqlite-vec` cosine distance over `vec_chunks`. The fused ranking is the default output. Every returned chunk carries a `signal` label so a reader can see which signal nominated it. Graph traversal is exposed in Phase 2 as a separate `mindgraph neighbors <doc_id>` lookup. It is not yet a ranking signal. Phase 3 wires the graph into ranking through `mindgraph query --expand`.
 
@@ -585,6 +693,7 @@ The phase closes when the suite passes and the README's "What this does" and "Wh
 ---
 
 ## 2026-05-20 — Phase 3 graph expansion: outbound walk from Phase 2 seeds, bounded depth, appended results with `expanded` signal
+
 
 **Decision:** The Phase 3 `mindgraph query --expand` command runs the Phase 2 query path first, then walks outbound `[[link]]` edges from each Phase 2 result to a bounded depth, and appends the walked documents to the result list with `signal = "expanded"` and a new `expansion_depth` integer field on every `QueryResult`. The walk follows the existing `edges` table in the source-to-target direction only. Dangling edges terminate the walk at their depth. Documents already present in the Phase 2 result set are not re-added by the walk. The walk does not affect the Phase 2 ranking; expanded documents follow the Phase 2 block, ordered by `(expansion_depth ASC, doc_id ASC, chunk_index ASC)`.
 
@@ -691,6 +800,7 @@ The phase closes when the suite passes and the README's "What this does not do y
 
 ## 2026-05-21 — Phase 4 public packaging
 
+
 **Decision:** Phase 4 ships a committed example vault, a real-output "Try it" walkthrough in the README, a CI-safe smoke test that exercises every retrieval path, and a documented entry point for the optional Phase 5 (MCP wrap). Phase 4 is content and docs only. No source changes, no schema changes, no new ranking signals, no new CLI flags.
 
 **Reasoning:** Phases 1, 2, and 3 shipped the feature surface. The asset is feature-complete enough to package. MindGraph's claim ("local retrieval engine that combines vector, lexical, and graph signals over one SQLite file") is intelligible from the current README but a reader has no way to run it without inventing their own vault. A committed example vault, a "Try it" walkthrough with real captured output, and a smoke that exercises every signal class let a reader clone the repo and observe each retrieval path in a single sitting.
@@ -782,6 +892,7 @@ Additive. The current section order (description, "What this does", "What it ran
 
 ## 2026-05-22 — Phase 5 MCP wrap
 
+
 **Decision:** Phase 5 adds a thin stdio MCP server around the existing MindGraph retrieval surface. The server exposes two MCP tools: `query`, which calls `query.run_query`, and `graph_neighbors`, which calls `query.list_neighbors`. The server does not add retrieval behavior, change ranking semantics, add schema, or change the existing CLI `query` and `neighbors` command signatures.
 
 **MCP SDK choice:** MindGraph uses the official Python MCP SDK (`modelcontextprotocol/python-sdk`, package name `mcp`). The SDK supports multiple transports. Phase 5 uses stdio only.
@@ -851,6 +962,7 @@ The full pytest suite, previously 88 passing tests after Phase 4, must stay gree
 
 ## 2026-05-31 — Scope-aware wikilink edge resolution
 
+
 **Decision:** Ingest resolves `[[link]]` edge targets against the full Markdown scope before computing `target_id`. Resolution order is exact scope-relative path, same-directory bare filename, globally unique stem, then globally unique document title. If no candidate is found, or if the global stem/title candidate is ambiguous, MindGraph preserves the existing dangling-edge behavior by hashing the normalized raw target.
 
 **Rationale:** Document IDs are hashes of scope-relative paths. Bare wikilinks from MainFrame notes usually name a file stem, not the full domain path, so hashing the raw label produced target IDs that did not match stored document IDs. Scope-aware resolution keeps existing document identity stable while making graph edges useful for domain-scoped vaults.
@@ -868,6 +980,7 @@ The full pytest suite, previously 88 passing tests after Phase 4, must stay gree
 ---
 
 ## 2026-06-14 — Phase 6 engine hardening: defect fixes with no new response surface
+
 
 **Decision:** Implement the four defect fixes nominated by the 2026-06-12 MainFrame engine audit as a hardening pass that does not change the result schema: (1) an allowlist FTS5 sanitizer plus semantic-only degradation, (2) orphan pruning on ingest, (3) oversized-paragraph chunk splitting, and (6) WAL journal mode + conditional edge-write + a scope-guarded post-commit hook. The audit's items 4 (emit frontmatter metadata) and 5 (weak-fit/no-answer signaling), which change the response surface, are deferred to a separate Phase 7 (trust + ranking).
 
@@ -896,6 +1009,7 @@ The full pytest suite, previously 88 passing tests after Phase 4, must stay gree
 ---
 
 ## 2026-06-14 — Phase 7 (part 1): expose semantic distance + a weak-fit signal
+
 
 **Decision:** Add two fields to `QueryResult`: `semantic_distance` (the raw vec_chunks distance of the result's surfaced chunk, null for lexical-only and expanded results) and `weak_fit` (a boolean). `weak_fit` is true only when a result was nominated purely by semantics — no lexical/fused overlap to corroborate it — and its distance exceeds a calibrated threshold, `WEAK_FIT_DISTANCE_THRESHOLD = 1.0`. The distance is threaded from `fetch_semantic_ranking` through `rrf_fuse` to `run_query` without entering the RRF math. The MCP server instructions now state that a `weak_fit` result means the index has no strong answer. This is "part 1" of Phase 7; emitting frontmatter `type`/`domain`/`status` shipped alongside it, and the lifecycle multi-DB experiment remains future work.
 

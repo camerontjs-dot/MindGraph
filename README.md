@@ -27,6 +27,46 @@ Each result carries a `signal` label (`lexical`, `semantic`, `fused`, `expanded`
 
 Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
 
+### Tuning the scope warnings
+
+`query_scope_warning` fires on a keyword heuristic, and the shipped defaults
+describe one vault's vocabulary. They are a starting point, not a claim about
+how anyone else labels current state. If your notes say "unfiled" rather than
+"inbox", or "standup" rather than "project status", retune it with a JSON file:
+
+```json
+{
+  "inbox_terms": ["unfiled", "to sort"],
+  "project_terms": ["sprint status", "standup"],
+  "live_state_terms": ["oncall", "deploy", "incident"]
+}
+```
+
+```bash
+export MINDGRAPH_SCOPE_VOCABULARY=~/.mindgraph/scope-vocabulary.json
+```
+
+Four keys are recognized: `inbox_terms`, `project_terms`, `freshness_terms`, and
+`live_state_terms`. Any key you omit keeps its default, so you can retune one
+branch without restating the rest. An empty list disables that warning entirely.
+
+Entries are regular-expression *fragments*, not literals, so `captures?` and
+`state\.md` behave as written. They are joined with `|`, wrapped in `\b(...)\b`,
+and matched case-insensitively.
+
+The `live_state` warning needs a hit in **both** `freshness_terms` and
+`live_state_terms`, so "latest incident" warns and a bare "incident" does not.
+That keeps ordinary durable-knowledge queries quiet.
+
+In Python, pass a vocabulary directly instead:
+
+```python
+from mindgraph.query import ScopeVocabulary, classify_query_scope
+
+vocab = ScopeVocabulary(inbox_terms=("unfiled", "to sort"))
+classify_query_scope("some unfiled notes", vocab)
+```
+
 `mindgraph query --expand` appends graph-walk results. After the fused list returns, the query walks outbound `[[link]]` edges from each fused result to a bounded depth (`--depth N`, default 1, cap 3) and appends walked documents with `signal = "expanded"` and an `expansion_depth` integer. The walk is outbound only, deduplicates against the fused set, terminates at dangling edges, and does not interact with the RRF math. `--expand-top-k N` (default 20) caps appended expanded rows.
 
 `mindgraph query --associate` appends semantic doc-neighbor results (ADR-034). From fused seeds (not expand results), embeds title + chunk excerpt per seed, runs vec kNN, and appends rows with `signal = "associated"`, `association_depth = 1`, and `semantic_distance`. `--associate-top-k` and `--associate-seed-k` cap output and seed count.
@@ -49,7 +89,7 @@ mindgraph init --db mindgraph.sqlite
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --embedder bge-small --embed-template mainframe
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --verbose
-mindgraph ingest path/to/your/vault --db mindgraph.sqlite --index-id mainframe-knowledge --trust-profile durable_knowledge --namespace knowledge --display-prefix 10_knowledge
+mindgraph ingest path/to/your/vault --db mindgraph.sqlite --index-id knowledge --trust-profile durable_knowledge --namespace knowledge --display-prefix knowledge
 mindgraph ingest-many path/to/manifest.json --db mindgraph.sqlite
 mindgraph query "what does this vault say about X" --db mindgraph.sqlite
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json
@@ -63,6 +103,28 @@ mindgraph neighbors <doc_id> --db mindgraph.sqlite --json
 mindgraph serve-mcp --db mindgraph.sqlite
 mindgraph serve-mcp --db mindgraph.sqlite --verbose
 ```
+
+The commands above are the compatibility path: one database, stdio transport,
+and legacy list-shaped query/neighbor JSON by default.
+
+### Optional shared daemon
+
+The opt-in shared server loads one embedder and opens each declared index
+read-only. You choose the scope names and their trust labels. It binds only to
+loopback and requires every tool call to select exactly one of your scopes. Its
+responses expose the selected scope and trust profile and never blend stores.
+
+```bash
+mindgraph daemon-start --scope notes=~/.mindgraph/notes.sqlite \
+                       --scope archive=~/.mindgraph/archive.sqlite
+mindgraph daemon-status
+mindgraph daemon-health
+mindgraph mcp-proxy --url http://127.0.0.1:8000/mcp
+mindgraph daemon-stop
+```
+
+The proxy does not start the daemon for you. See the [MCP](#mcp) section for
+declaring scopes, connecting clients, and what is not established.
 
 First ingest on a fresh machine downloads and caches the embedding model. First query also loads the model to embed the query text, and logs the same line. Subsequent runs reuse the cached model.
 
@@ -203,44 +265,135 @@ $ mindgraph neighbors c8a1be119b7ad0c3 --db /tmp/mindgraph-example/db.sqlite
 
 ## MCP
 
-MindGraph ships a stdio MCP server for local clients that already speak MCP. It is a transport wrap around the same retrieval code used by the CLI. It does not add ranking behavior, change the database schema, or turn retrieved chunks into verified claims.
+MindGraph ships MCP transports around the same retrieval code used by the CLI.
+It does not add ranking behavior, change the database schema, or turn retrieved
+chunks into verified claims.
 
-### Start the server
+Two transports ship. Pick by how many databases you need open at once.
 
-Build or reuse a database first, then start the server from the asset root:
+| Transport | Command | Use it when |
+|---|---|---|
+| Streamable HTTP daemon | `serve-daemon` / `daemon-start` | You want several named indexes, and several MCP clients sharing one loaded embedder |
+| stdio server | `serve-mcp` | You want one database bound to one client, or you are debugging in isolation |
+
+### Recommended: shared daemon over Streamable HTTP
+
+Each stdio server process loads its own copy of the embedding model. If you run
+several MCP clients at once, that is several copies of MiniLM resident at the
+same time. The daemon exists to make that cost once instead of once per client.
+
+One loopback process opens each index read-only, holds a single embedder, and
+serves them over the MCP Streamable HTTP transport.
+
+**You choose the scopes.** A scope is a name, a database, and a trust profile
+label that rides along on every result from that store. Name them after whatever
+distinction actually matters in your vault. Build one database per scope:
 
 ```bash
-.venv/bin/mindgraph init --db /tmp/mindgraph-mcp/db.sqlite
-.venv/bin/mindgraph ingest examples/example-vault --db /tmp/mindgraph-mcp/db.sqlite
-.venv/bin/mindgraph serve-mcp --db /tmp/mindgraph-mcp/db.sqlite --verbose
+mindgraph init   --db ~/.mindgraph/recipes.sqlite
+mindgraph ingest ~/vault/recipes --db ~/.mindgraph/recipes.sqlite \
+  --index-id recipes --namespace recipes --display-prefix recipes
+
+mindgraph init   --db ~/.mindgraph/journal.sqlite
+mindgraph ingest ~/vault/journal --db ~/.mindgraph/journal.sqlite \
+  --index-id journal --namespace journal --display-prefix journal
 ```
 
-The server runs in the foreground and writes logs to stderr only. Stdout is reserved for MCP protocol frames. A smoke run against `examples/example-vault/` showed the eager model load at startup:
+Then declare them with a repeatable `--scope`:
 
-```text
-21:30:39 INFO    mindgraph | Loading embedding model (all-MiniLM-L6-v2)...
+```bash
+mindgraph daemon-start \
+  --scope recipes=~/.mindgraph/recipes.sqlite \
+  --scope journal:personal_log=~/.mindgraph/journal.sqlite
+mindgraph daemon-status
+mindgraph daemon-health
+mindgraph daemon-stop
 ```
 
-### Claude Code config
+The spec is `NAME=PATH`, or `NAME:TRUST_PROFILE=PATH` when you want the trust
+label to differ from the scope name. Only the first `=` is a separator, so
+database paths may contain `=` and `:`. Trust profile defaults to the scope
+name. The health endpoint reports back exactly what you declared:
 
-Add a `.mcp.json` at the repo root, adjusting the absolute paths for your checkout and database:
+```json
+{"status":"ok","scopes":[{"scope":"journal","trust_profile":"personal_log"},
+                         {"scope":"recipes","trust_profile":"recipes"}]}
+```
+
+Every shared tool call must name one `scope`. There is no blended query: a call
+with no scope fails validation, and an unrecognized scope is rejected with the
+list of names you declared. Responses report the scope and trust profile they
+were served from, so a caller can always tell which store an answer came from.
+
+Pass `--index-id`, `--namespace`, and `--display-prefix` at ingest if you want
+provenance fields populated on result rows; without them those fields are null.
+
+`serve-daemon` runs the same server in the foreground if you would rather
+supervise it yourself. Both accept `--host` (default `127.0.0.1`), `--port`
+(default `8000`), `--path` (default `/mcp`), and `--embedder`.
+
+<details>
+<summary>Two-index shorthand</summary>
+
+`--knowledge-db` and `--projects-db` are a fixed shorthand for a durable-notes
+plus active-work split, kept for existing deployments:
+
+```bash
+mindgraph daemon-start \
+  --knowledge-db ~/.mindgraph/knowledge.sqlite \
+  --projects-db  ~/.mindgraph/projects.sqlite
+```
+
+That is equivalent to `--scope knowledge:durable_knowledge=...` plus
+`--scope projects:project_status=...`. Any `--scope` you pass replaces this pair
+entirely. Prefer `--scope` for new setups.
+
+</details>
+
+### Connecting clients
+
+Clients that speak Streamable HTTP connect to the daemon directly:
+
+```
+http://127.0.0.1:8000/mcp
+```
+
+Clients that speak stdio connect through the bundled proxy, which is a thin
+Streamable HTTP client that re-exposes the daemon's tools over stdio:
 
 ```json
 {
   "mcpServers": {
     "mindgraph": {
-      "command": "/absolute/path/to/mindgraph/.venv/bin/mindgraph",
-      "args": [
-        "serve-mcp",
-        "--db",
-        "/absolute/path/to/mindgraph.sqlite"
-      ]
+      "command": "mindgraph",
+      "args": ["mcp-proxy", "--url", "http://127.0.0.1:8000/mcp"]
     }
   }
 }
 ```
 
-Claude Code, Claude Desktop, Cursor, Cline, and other stdio-MCP-aware local clients can use the same server shape.
+Use the absolute path to the `mindgraph` entry point if it is not on your
+client's `PATH` (for example `/path/to/.venv/bin/mindgraph`). The proxy does not
+start the daemon for you.
+
+### Single-database stdio server
+
+For one index bound to one client, or for isolated debugging:
+
+```bash
+mindgraph init   --db /tmp/mindgraph-mcp/db.sqlite
+mindgraph ingest examples/example-vault --db /tmp/mindgraph-mcp/db.sqlite
+mindgraph serve-mcp --db /tmp/mindgraph-mcp/db.sqlite --verbose
+```
+
+Stdout is reserved for MCP protocol frames; logs go to stderr.
+
+### What is not established
+
+Re-ingesting does not hot-reload a running daemon; restart it to pick up new
+content. The daemon binds to loopback and ships no authentication, so it is not
+safe to expose beyond the local machine. Process supervision, concurrency
+behavior under load, and RAM and latency figures are unmeasured.
 
 ### Tools
 

@@ -6,6 +6,7 @@ import types
 import pytest
 
 from mindgraph import embedders
+from mindgraph.exceptions import EmbeddingError
 
 
 def test_resolve_default_embedder():
@@ -67,7 +68,7 @@ def test_load_sentence_embedder_uses_local_files_only(monkeypatch):
     assert captured["kwargs"].get("local_files_only") is True
 
 
-def test_load_sentence_embedder_missing_cache_raises(monkeypatch):
+def test_load_sentence_embedder_missing_cache_raises_embedding_error(monkeypatch):
     class BoomSentenceTransformer:
         def __init__(self, *args, **kwargs):
             raise OSError("model not found in local cache")
@@ -77,5 +78,5 @@ def test_load_sentence_embedder_missing_cache_raises(monkeypatch):
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
 
     spec = embedders.resolve_embedder("minilm")
-    with pytest.raises(RuntimeError, match="local_files_only=True"):
+    with pytest.raises(EmbeddingError, match="local_files_only=True"):
         embedders.load_sentence_embedder(spec)

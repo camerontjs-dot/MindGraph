@@ -1,4 +1,6 @@
 import json as jsonlib
+import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -10,10 +12,18 @@ from mindgraph import cli, db, parser
 from mindgraph.intent import compile_intent_corpus
 from mindgraph.models import QueryResult
 from mindgraph.query import (
+    DEFAULT_SCOPE_VOCABULARY,
     RRF_K,
+    MAX_QUERY_TOP_K,
+    QueryError,
+    SCOPE_VOCABULARY_ENV,
+    ScopeVocabulary,
     WEAK_FIT_DISTANCE_THRESHOLD,
     _is_weak_fit,
+    _vocabulary_from_env,
+    active_scope_vocabulary,
     classify_query_scope,
+    load_scope_vocabulary,
     fetch_lexical_ranking,
     fetch_semantic_ranking,
     rrf_fuse,
@@ -162,6 +172,11 @@ class TestRRFFuse:
         # 1 / 61 is not a terminating decimal.
         assert out[0][2] != round(out[0][2], 2) or out[0][2] == round(out[0][2], 2)
 
+    @pytest.mark.parametrize("top_k", [-1, MAX_QUERY_TOP_K + 1, True])
+    def test_invalid_top_k_is_rejected_instead_of_becoming_unbounded(self, top_k):
+        with pytest.raises(QueryError, match="final_top_k"):
+            rrf_fuse([("a", 1)], [], top_k=top_k)
+
 
 # --- Unit tests: weak-fit heuristic ------------------------------------------ #
 
@@ -210,6 +225,98 @@ class TestQueryScopeWarning:
 
     def test_ordinary_durable_knowledge_query_has_no_warning(self):
         assert classify_query_scope("agent memory remember cite forget") is None
+
+
+class TestScopeVocabulary:
+    """The warning terms are configurable; the defaults must not shift."""
+
+    def test_default_patterns_are_unchanged(self):
+        expected = (
+            r"\b(inbox|captures?|routing queue|ready queue|waiting for routing"
+            r"|00_inbox|01_ingest)\b",
+            r"\b(30_projects|project status|active project|project_state"
+            r"|next_action|next action|project readme|state\.md|handoff|next gate)\b",
+            r"\b(current|latest|today|this week|this month|right now|now|recent"
+            r"|live|as of)\b",
+            r"\b(job hunt|finance|calendar|workflow metrics|telemetry|live state"
+            r"|status|blocked?|blockers?|remaining|next)\b",
+        )
+        actual = tuple(p.pattern for p in DEFAULT_SCOPE_VOCABULARY._patterns)
+        assert actual == expected
+
+    def test_custom_terms_replace_defaults_for_that_branch(self):
+        vocab = ScopeVocabulary(inbox_terms=("unfiled", "to sort"))
+        warning = classify_query_scope("some unfiled notes", vocab)
+        assert warning is not None and warning.intent == "inbox_state"
+        assert classify_query_scope("inbox captures", vocab) is None
+
+    def test_unspecified_branches_keep_defaults(self):
+        vocab = ScopeVocabulary(inbox_terms=("unfiled",))
+        assert vocab.freshness_terms == DEFAULT_SCOPE_VOCABULARY.freshness_terms
+        assert vocab.project_terms == DEFAULT_SCOPE_VOCABULARY.project_terms
+
+    def test_empty_term_list_disables_that_branch(self):
+        vocab = ScopeVocabulary(inbox_terms=())
+        assert classify_query_scope("inbox captures waiting for routing", vocab) is None
+
+    def test_live_state_needs_both_freshness_and_state_terms(self):
+        vocab = ScopeVocabulary(live_state_terms=("incident",))
+        assert classify_query_scope("latest incident", vocab).intent == "live_state"
+        assert classify_query_scope("incident", vocab) is None
+
+    def test_from_mapping_partial_override(self):
+        vocab = ScopeVocabulary.from_mapping({"project_terms": ["standup"]})
+        assert vocab.project_terms == ("standup",)
+        assert vocab.inbox_terms == DEFAULT_SCOPE_VOCABULARY.inbox_terms
+
+    def test_from_mapping_rejects_unknown_key(self):
+        with pytest.raises(QueryError, match="unknown scope vocabulary key"):
+            ScopeVocabulary.from_mapping({"bogus_terms": ["x"]})
+
+    def test_from_mapping_rejects_non_list_value(self):
+        with pytest.raises(QueryError, match="must be a list of strings"):
+            ScopeVocabulary.from_mapping({"inbox_terms": "notalist"})
+
+    def test_load_from_json_file(self, tmp_path):
+        path = tmp_path / "vocab.json"
+        path.write_text(jsonlib.dumps({"inbox_terms": ["unfiled"]}))
+        vocab = load_scope_vocabulary(path)
+        assert vocab.inbox_terms == ("unfiled",)
+
+    def test_load_missing_file_raises(self, tmp_path):
+        with pytest.raises(QueryError, match="not found"):
+            load_scope_vocabulary(tmp_path / "absent.json")
+
+    def test_load_invalid_json_raises(self, tmp_path):
+        path = tmp_path / "vocab.json"
+        path.write_text("{not json")
+        with pytest.raises(QueryError, match="not valid JSON"):
+            load_scope_vocabulary(path)
+
+    def test_load_non_object_raises(self, tmp_path):
+        path = tmp_path / "vocab.json"
+        path.write_text("[1, 2]")
+        with pytest.raises(QueryError, match="must contain a JSON object"):
+            load_scope_vocabulary(path)
+
+    def test_env_var_overrides_active_vocabulary(self, tmp_path, monkeypatch):
+        path = tmp_path / "vocab.json"
+        path.write_text(jsonlib.dumps({"inbox_terms": ["unfiled"]}))
+        monkeypatch.setenv(SCOPE_VOCABULARY_ENV, str(path))
+        _vocabulary_from_env.cache_clear()
+        try:
+            assert active_scope_vocabulary().inbox_terms == ("unfiled",)
+            assert classify_query_scope("some unfiled notes").intent == "inbox_state"
+        finally:
+            _vocabulary_from_env.cache_clear()
+
+    def test_no_env_var_uses_defaults(self, monkeypatch):
+        monkeypatch.delenv(SCOPE_VOCABULARY_ENV, raising=False)
+        _vocabulary_from_env.cache_clear()
+        try:
+            assert active_scope_vocabulary() == DEFAULT_SCOPE_VOCABULARY
+        finally:
+            _vocabulary_from_env.cache_clear()
 
 
 # --- Integration tests: against a small ingested vault ----------------------- #
@@ -569,6 +676,45 @@ class TestQueryCLI:
         assert "signal=" in result.stdout
         assert "rrf_score=" in result.stdout
 
+    def test_query_command_reads_wal_db_from_nonwritable_directory(
+        self, vault_db, keyword_embedder, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
+        db_path = Path(vault_db)
+        parent = db_path.parent
+        before = db_path.read_bytes()
+        os.chmod(db_path, 0o444)
+        os.chmod(parent, 0o555)
+        try:
+            result = CliRunner().invoke(
+                cli.app, ["query", "zebra", "--db", vault_db, "--json"]
+            )
+            assert result.exit_code == 0, result.output
+            assert jsonlib.loads(result.stdout)
+            assert db_path.read_bytes() == before
+        finally:
+            os.chmod(parent, 0o755)
+            os.chmod(db_path, 0o644)
+
+    def test_query_command_reports_embedder_load_failure_cleanly(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        db_path = tmp_path / "query.sqlite"
+        db.init_db(str(db_path)).close()
+
+        def fail_load(_spec):
+            raise RuntimeError("offline fixture")
+
+        monkeypatch.setattr(cli.embedders, "load_sentence_embedder", fail_load)
+        with caplog.at_level(logging.ERROR, logger="mindgraph"):
+            result = CliRunner().invoke(
+                cli.app,
+                ["query", "hello", "--db", str(db_path), "--no-intent"],
+            )
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, RuntimeError)
+        assert "Failed to load embedding model" in caplog.text
+
     def test_query_command_json_output(
         self, vault_db, keyword_embedder, monkeypatch
     ):
@@ -607,15 +753,36 @@ class TestQueryCLI:
                 "chunk_text",
             ):
                 assert field in row
-            # `source_root` is the ingest root on the indexing machine and used
-            # to ship in every serialized row. `path` already locates the
-            # document relatively, so nothing downstream needs the host path.
+            # `source_root` is the ingest root on the indexing machine. It used
+            # to ship in every serialized row, which handed an absolute host
+            # path to any CLI or MCP caller. `path` already locates the
+            # document relatively, so the root is redundant downstream.
             assert "source_root" not in row
-            assert not [
-                (field, value)
-                for field, value in row.items()
-                if isinstance(value, str) and value.startswith("/")
-            ]
+
+    def test_serialized_results_carry_no_absolute_host_paths(
+        self, vault_db, keyword_embedder, monkeypatch
+    ):
+        """No serialized query field may be an absolute filesystem path.
+
+        Written as a property over every field rather than a check on
+        `source_root` by name, so a new path-bearing field fails here instead
+        of leaking to callers.
+        """
+        monkeypatch.setattr(cli, "_load_embedder", lambda *_a, **_k: keyword_embedder)
+        result = CliRunner().invoke(
+            cli.app,
+            ["query", "zebra", "--db", vault_db, "--json", "--top-k", "3"],
+        )
+        assert result.exit_code == 0
+        rows = jsonlib.loads(result.stdout)
+        assert rows, "fixture must return at least one row for this to bite"
+        offenders = [
+            (index, field, value)
+            for index, row in enumerate(rows)
+            for field, value in row.items()
+            if isinstance(value, str) and value.startswith("/")
+        ]
+        assert not offenders, f"absolute paths in serialized results: {offenders}"
 
     def test_query_command_json_envelope_output(
         self, tmp_path, vault_db, keyword_embedder, monkeypatch
@@ -656,6 +823,8 @@ class TestQueryCLI:
             "intent_resolution",
             "routing",
             "results",
+            "not_citable",
+            "citation_counts",
         }
         assert data["schema_version"] == "1"
         assert data["intent_resolution"]["graph_id"] == "mainframe.core"
@@ -711,3 +880,24 @@ class TestQueryCLI:
         data = jsonlib.loads(result.stdout)
         assert data
         assert data[0]["query_scope_warning"]["intent"] == "inbox_state"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        ({"lexical_top_k": -1}, "lexical_top_k"),
+        ({"semantic_top_k": MAX_QUERY_TOP_K + 1}, "semantic_top_k"),
+        ({"expand": True, "expand_depth": 4}, "expand_depth"),
+        ({"expand": True, "expand_top_k": -1}, "expand_top_k"),
+        ({"associate": True, "associate_seed_k": -1}, "associate_seed_k"),
+    ],
+)
+def test_run_query_rejects_invalid_resource_limits_before_work(
+    vault_db, keyword_embedder, kwargs, field
+):
+    conn = db.get_db(vault_db)
+    try:
+        with pytest.raises(QueryError, match=field):
+            run_query(conn, "zebra", keyword_embedder, **kwargs)
+    finally:
+        conn.close()

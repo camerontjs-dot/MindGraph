@@ -23,7 +23,3 @@ build/
 AGENTS.md
 CHANGELOG.md
 planning/
-
-# Operator session notes and MainFrame-coupled helpers stay local
-notes/
-tests/test_pruning.py
