@@ -59,7 +59,16 @@ class QueryResult(BaseModel):
     index_id: str | None = None
     trust_profile: str | None = None
     namespace: str | None = None
-    source_root: str | None = None
+    #: Absolute ingest root on the indexing machine, e.g. `/home/me/notes`.
+    #: Excluded from serialization on purpose: it is an internal join key, and
+    #: it is the only field on this model that is definitionally a host path.
+    #: `path`, `source_path`, and `display_path` are all relative and already
+    #: tell a consumer where the document lives, so nothing downstream needs
+    #: the root. Query-time governance reads it in-process as an attribute,
+    #: which `exclude` does not affect. Excluding it here rather than at each
+    #: `model_dump()` call site means a serialization path added later cannot
+    #: reintroduce the leak.
+    source_root: str | None = Field(default=None, exclude=True)
     source_path: str | None = None
     display_path: str | None = None
     content_hash: str | None = None
