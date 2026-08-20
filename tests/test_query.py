@@ -595,7 +595,6 @@ class TestQueryCLI:
                 "index_id",
                 "trust_profile",
                 "namespace",
-                "source_root",
                 "source_path",
                 "display_path",
                 "signal",
@@ -608,6 +607,15 @@ class TestQueryCLI:
                 "chunk_text",
             ):
                 assert field in row
+            # `source_root` is the ingest root on the indexing machine and used
+            # to ship in every serialized row. `path` already locates the
+            # document relatively, so nothing downstream needs the host path.
+            assert "source_root" not in row
+            assert not [
+                (field, value)
+                for field, value in row.items()
+                if isinstance(value, str) and value.startswith("/")
+            ]
 
     def test_query_command_json_envelope_output(
         self, tmp_path, vault_db, keyword_embedder, monkeypatch

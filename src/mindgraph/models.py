@@ -59,7 +59,12 @@ class QueryResult(BaseModel):
     index_id: str | None = None
     trust_profile: str | None = None
     namespace: str | None = None
-    source_root: str | None = None
+    #: Absolute ingest root on the indexing machine. Excluded from
+    #: serialization: it is an internal join key and the only field here that is
+    #: definitionally a host path. `path`, `source_path`, and `display_path` are
+    #: relative and already locate the document. Query-time governance reads it
+    #: in-process as an attribute, which `exclude` does not affect.
+    source_root: str | None = Field(default=None, exclude=True)
     source_path: str | None = None
     display_path: str | None = None
     content_hash: str | None = None
