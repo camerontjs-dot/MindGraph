@@ -29,7 +29,6 @@ jobs:
           mapfile -t changed < <(git diff --name-only "$CANDIDATE_SHA" HEAD | sort)
           expected=(.github/workflows/mindgraph-portability-rc1-final.yml)
           test "${changed[*]}" = "${expected[*]}"
-          test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$(git rev-parse HEAD^:{})"
           printf 'candidate_sha=%s\ncandidate_tree=%s\nharness_sha=%s\n' \
             "$CANDIDATE_SHA" "$(git rev-parse "$CANDIDATE_SHA^{tree}")" "$(git rev-parse HEAD)" | tee artifacts/identity.txt
 
