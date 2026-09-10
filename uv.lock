@@ -624,30 +624,43 @@ name = "mindgraph"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
-    { name = "mcp" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "sentence-transformers" },
     { name = "sqlite-vec" },
     { name = "typer" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
+]
+full = [
+    { name = "mcp" },
+    { name = "sentence-transformers" },
+]
+mcp = [
+    { name = "mcp" },
+]
+semantic = [
+    { name = "sentence-transformers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", marker = "extra == 'full'", specifier = ">=1.0.0,<2" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0,<2" },
+    { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.24.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "sentence-transformers", specifier = ">=3.0.0" },
+    { name = "sentence-transformers", marker = "extra == 'full'", specifier = ">=3.0.0" },
+    { name = "sentence-transformers", marker = "extra == 'semantic'", specifier = ">=3.0.0" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
     { name = "typer", specifier = ">=0.12.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["semantic", "mcp", "full", "dev"]
 
 [[package]]
 name = "mpmath"

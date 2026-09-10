@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from mindgraph import daemon, db, embedders, idle_lifecycle, mcp_proxy, mcp_server, parser
+from mindgraph import daemon, db, embedders, idle_lifecycle, parser
 from mindgraph import query as query_mod
 from mindgraph.exceptions import EmbeddingError, IngestionError, MindgraphError
 from mindgraph import intent as intent_mod
@@ -61,6 +61,28 @@ def _load_embedder(embedder: str | None = None):
             f"Failed to load embedding model {spec.model_id!r}: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
+
+
+def _require_mcp_server():
+    try:
+        from mindgraph import mcp_server
+    except ModuleNotFoundError as exc:
+        raise MindgraphError(
+            "MCP support is not installed. Install it with "
+            "`pip install 'mindgraph[mcp]'` (or `mindgraph[full]`)."
+        ) from exc
+    return mcp_server
+
+
+def _require_mcp_proxy():
+    try:
+        from mindgraph import mcp_proxy
+    except ModuleNotFoundError as exc:
+        raise MindgraphError(
+            "MCP proxy support is not installed. Install it with "
+            "`pip install 'mindgraph[mcp]'` (or `mindgraph[full]`)."
+        ) from exc
+    return mcp_proxy
 
 
 def _encode_without_progress(embedder, texts):
@@ -162,6 +184,7 @@ def _ingest_scopes(
     *,
     embedder: str | None = None,
     embed_template: str | None = None,
+    lexical_only: bool = False,
 ) -> dict[str, int]:
     stats = {"total": 0, "ingested": 0, "skipped": 0, "pruned": 0, "failed": 0}
     scope_files: list[tuple[IngestScope, Path]] = []
@@ -179,7 +202,11 @@ def _ingest_scopes(
 
     spec = embedders.resolve_embedder(embedder)
     template = embedders.resolve_embed_template(embed_template)
-    conn = db.init_db(db_path, embedding_dims=spec.dimensions)
+    conn = db.init_db(
+        db_path,
+        embedding_dims=spec.dimensions,
+        semantic_enabled=not lexical_only,
+    )
     model = None
     parsed_docs: list[tuple[Path, parser.ParsedDocument]] = []
 
@@ -229,8 +256,8 @@ def _ingest_scopes(
                     continue
 
                 chunks = parser.chunk_truth(parsed.truth_text)
-                embeddings: list[list[float]] = []
-                if chunks:
+                embeddings: list[list[float]] | None = None if lexical_only else []
+                if chunks and not lexical_only:
                     if model is None:
                         model = _load_embedder(embedder)
                     encode_chunks = [
@@ -305,6 +332,7 @@ def _ingest_directory(
     exclude_globs: tuple[str, ...] | None = None,
     embedder: str | None = None,
     embed_template: str | None = None,
+    lexical_only: bool = False,
 ) -> dict[str, int]:
     return _ingest_scopes(
         [
@@ -322,6 +350,7 @@ def _ingest_directory(
         db_path,
         embedder=embedder,
         embed_template=embed_template,
+        lexical_only=lexical_only,
     )
 
 
@@ -422,6 +451,29 @@ def init(
         raise typer.Exit(code=1)
 
 
+@app.command("bootstrap-model")
+def bootstrap_model(
+    embedder: str | None = typer.Option(
+        None,
+        "--embedder",
+        help="Embedder key (minilm, bge-small, e5-small) or MINDGRAPH_EMBEDDER env.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Explicitly acquire and cache a semantic embedding model."""
+    _configure_logging(verbose)
+    try:
+        spec = embedders.resolve_embedder(embedder)
+        logger.info("Acquiring embedding model (%s)...", spec.model_id)
+        embedders.bootstrap_sentence_embedder(spec)
+        typer.echo(
+            f"Embedding model ready: {spec.model_id} ({spec.dimensions} dimensions)"
+        )
+    except MindgraphError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+
+
 def _format_db_doctor_block(report: dict) -> str:
     status = "OK" if report.get("ok") else "FAIL"
     role = report.get("role") or "db"
@@ -445,6 +497,8 @@ def _format_db_doctor_block(report: dict) -> str:
         lines.append(f"  mtime:          {report['mtime_iso']}")
     if report.get("embedding_dims") is not None:
         lines.append(f"  embedding_dims: {report['embedding_dims']}")
+    if report.get("semantic_enabled") is not None:
+        lines.append(f"  semantic_enabled: {report['semantic_enabled']}")
     missing = report.get("tables_missing") or []
     if missing:
         lines.append(f"  tables_missing: {', '.join(missing)}")
@@ -581,6 +635,11 @@ def ingest(
         "--embed-template",
         help="Optional passage/query template (none, mainframe).",
     ),
+    lexical_only: bool = typer.Option(
+        False,
+        "--lexical-only",
+        help="Build an FTS5/graph index without loading or storing semantic vectors.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Ingest a directory of markdown files."""
@@ -596,6 +655,7 @@ def ingest(
             display_prefix=display_prefix,
             embedder=embedder,
             embed_template=embed_template,
+            lexical_only=lexical_only,
         )
         logger.info(
             "Done. total=%d ingested=%d skipped=%d pruned=%d failed=%d",
@@ -633,6 +693,11 @@ def ingest_many(
         "--embed-template",
         help="Optional passage/query template (none, mainframe).",
     ),
+    lexical_only: bool = typer.Option(
+        False,
+        "--lexical-only",
+        help="Build an FTS5/graph index without loading or storing semantic vectors.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Ingest multiple markdown roots from a JSON manifest as one index."""
@@ -644,6 +709,7 @@ def ingest_many(
             db_path,
             embedder=embedder,
             embed_template=embed_template,
+            lexical_only=lexical_only,
         )
         logger.info(
             "Done. scopes=%d total=%d ingested=%d skipped=%d pruned=%d failed=%d",
@@ -743,6 +809,11 @@ def query(
         "--semantic-top-k",
         help="Top-k for the vec_chunks ranking before fusion.",
     ),
+    lexical_only: bool = typer.Option(
+        False,
+        "--lexical-only",
+        help="Use only FTS5 and graph data; do not load an embedding model.",
+    ),
     final_top_k: int = typer.Option(
         query_mod.DEFAULT_FINAL_TOP_K,
         "--top-k",
@@ -817,6 +888,7 @@ def query(
     """Run a fused lexical + semantic query against an ingested database.
 
     Pass --expand for graph BFS matches; --associate for semantic doc neighbors.
+    Pass --lexical-only for the dependency-light FTS5/graph profile.
     Pass --envelope with --json to include intent graph resolution metadata.
     Plain --json preserves the legacy result-list contract for existing callers.
     Text output still shows intent resolution by default. Use --no-intent to skip.
@@ -832,18 +904,33 @@ def query(
 
     try:
         try:
-            spec = embedders.resolve_embedder(embedder)
+            if lexical_only and associate:
+                raise EmbeddingError(
+                    "--associate requires semantic retrieval; remove --lexical-only"
+                )
+            effective_semantic_top_k = 0 if lexical_only else semantic_top_k
             template = embedders.resolve_embed_template(embed_template)
-            model = _load_embedder(spec.key)
-            formatted_question = embedders.format_query_text(
-                spec, question, template=template
-            )
+            spec = None
+            model = None
+            if effective_semantic_top_k > 0 or associate:
+                spec = embedders.resolve_embedder(embedder)
+                if db.get_semantic_enabled(conn) is False:
+                    raise EmbeddingError(
+                        "This database is lexical-only. Re-ingest it without "
+                        "--lexical-only to enable semantic retrieval."
+                    )
+                model = _load_embedder(spec.key)
+                formatted_question = embedders.format_query_text(
+                    spec, question, template=template
+                )
+            else:
+                formatted_question = question
             results = query_mod.run_query(
                 conn,
                 formatted_question,
                 model,
                 lexical_top_k=lexical_top_k,
-                semantic_top_k=semantic_top_k,
+                semantic_top_k=effective_semantic_top_k,
                 final_top_k=final_top_k,
                 expand=expand,
                 expand_depth=expand_depth,
@@ -884,9 +971,7 @@ def query(
             if envelope:
                 # Match MCP envelope shape so CLI and tool callers share one parser.
                 if resolution is not None:
-                    resolution_payload = mcp_server._intent_resolution_payload(
-                        resolution
-                    )
+                    resolution_payload = resolution.as_transport_payload()
                     reason = "intent_resolved"
                     warnings = list(resolution.warnings)
                 else:
@@ -907,7 +992,7 @@ def query(
                         "reason_codes": [reason],
                         "warnings": warnings,
                     },
-                    **mcp_server._citation_partition(results),
+                    **query_mod.citation_partition_payload(results),
                 }
             else:
                 emitted = results
@@ -1017,6 +1102,7 @@ def serve_mcp(
     _configure_logging(verbose)
     conn = None
     try:
+        mcp_server = _require_mcp_server()
         conn = mcp_server.open_database(db_path)
         spec = embedders.resolve_embedder(embedder)
         template = embedders.resolve_embed_template(embed_template)
@@ -1083,6 +1169,7 @@ def serve_daemon(
     """Run the explicit-scope shared MCP server in the foreground."""
     conns = []
     try:
+        mcp_server = _require_mcp_server()
         requested = parse_scope_specs(scope) or {
             "knowledge": (knowledge_db, "durable_knowledge"),
             "projects": (projects_db, "project_status"),
@@ -1127,6 +1214,7 @@ def mcp_proxy_command(
 ):
     """Proxy stdio MCP to an already-running shared daemon."""
     try:
+        mcp_proxy = _require_mcp_proxy()
         activated_grace = daemon.idle_opt_in(state_dir)
         if auto_start is None:
             auto_start = activated_grace is not None
