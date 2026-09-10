@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph.exceptions import DatabaseError, MindgraphError
