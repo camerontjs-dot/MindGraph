@@ -649,3 +649,61 @@ def test_ingest_many_allow_failures_does_not_prune_still_present_bad_file(
         }
     finally:
         conn.close()
+
+
+def test_lexical_only_ingest_skips_model_and_writes_no_vectors(
+    sample_notes, db_path, monkeypatch
+):
+    def fail_load(*_args, **_kwargs):
+        raise AssertionError("lexical-only ingest must not load a model")
+
+    monkeypatch.setattr(cli, "_load_embedder", fail_load)
+    stats = cli._ingest_directory(sample_notes, db_path, lexical_only=True)
+
+    assert stats["ingested"] == 3
+    conn = db.get_db(db_path)
+    try:
+        assert db.get_semantic_enabled(conn) is False
+        assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] >= 3
+        assert conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_lexical_only_query_skips_model_and_returns_fts_results(
+    sample_notes, db_path, monkeypatch
+):
+    cli._ingest_directory(sample_notes, db_path, lexical_only=True)
+
+    def fail_load(*_args, **_kwargs):
+        raise AssertionError("lexical-only query must not load a model")
+
+    monkeypatch.setattr(cli, "_load_embedder", fail_load)
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "query",
+            "Project status",
+            "--db",
+            db_path,
+            "--lexical-only",
+            "--json",
+            "--no-intent",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows and rows[0]["path"] == "with-timeline.md"
+    assert rows[0]["signal"] == "lexical"
+
+
+def test_semantic_query_rejects_lexical_only_database(sample_notes, db_path, caplog):
+    cli._ingest_directory(sample_notes, db_path, lexical_only=True)
+    result = CliRunner().invoke(
+        cli.app,
+        ["query", "Project status", "--db", db_path, "--no-intent"],
+    )
+
+    assert result.exit_code == 1
+    assert "lexical-only" in caplog.text.lower()

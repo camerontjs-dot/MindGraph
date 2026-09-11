@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph.exceptions import DatabaseError, MindgraphError
@@ -522,6 +522,21 @@ def citation_counts(results: list["QueryResult"]) -> dict[str, int]:
     return counts
 
 
+def citation_partition_payload(results: list["QueryResult"]) -> dict[str, Any]:
+    """Serialize ranked rows while keeping non-citable rows separate.
+
+    This transport-neutral helper is shared by the core CLI and optional MCP
+    adapters. Retrieval remains nomination-only; partitioning is a consumer
+    safety boundary, not factual adjudication.
+    """
+    candidates, excluded = partition_by_citation(results)
+    return {
+        "results": [r.model_dump() for r in candidates],
+        "not_citable": [r.model_dump() for r in excluded],
+        "citation_counts": citation_counts(results),
+    }
+
+
 def _resolve_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
     """Resolve a document's display + frontmatter fields, or None if missing.
 
@@ -577,7 +592,7 @@ DEFAULT_ASSOCIATE_SEED_K = 5
 def run_query(
     conn: sqlite3.Connection,
     query_text: str,
-    embedder: Embedder,
+    embedder: Embedder | None,
     *,
     lexical_top_k: int = DEFAULT_LEXICAL_TOP_K,
     semantic_top_k: int = DEFAULT_SEMANTIC_TOP_K,
@@ -594,8 +609,8 @@ def run_query(
     """Run the Phase 2 query pipeline end-to-end and return QueryResult rows.
 
     Lexical-only results surface chunk 0 by default because there is no semantic
-    ranking to pick a better chunk from. This is a minor v0.1 simplification
-    recorded in DECISIONS.md.
+    ranking to pick a better chunk from. Pass ``semantic_top_k=0`` and
+    ``embedder=None`` for a core-profile lexical query.
 
     When `expand` is True, walks outbound `[[link]]` edges from the Phase 2
     results to `expand_depth` hops and appends the walked documents with
@@ -626,6 +641,12 @@ def run_query(
         lexical = []
 
     if semantic_top_k > 0:
+        if embedder is None:
+            raise QueryError(
+                "semantic retrieval requires an embedding model; install "
+                "mindgraph[semantic] and run `mindgraph bootstrap-model`, or "
+                "use --lexical-only"
+            )
         raw = _encode_without_progress(embedder, [query_text])
         query_embedding = [float(x) for x in raw[0]]
         semantic = fetch_semantic_ranking(
@@ -693,6 +714,11 @@ def run_query(
         )
 
     if associate:
+        if embedder is None:
+            raise QueryError(
+                "semantic association requires an embedding model; install "
+                "mindgraph[semantic] and run `mindgraph bootstrap-model`"
+            )
         output.extend(
             associate_results(
                 conn,

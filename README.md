@@ -1,8 +1,23 @@
 # MindGraph
 
-MindGraph is a local, graph-augmented retrieval engine for personal Markdown knowledge bases. It ingests a directory of notes, extracts a typed `[[link]]` document graph, chunks the body text, embeds the chunks with a small CPU model, and stores everything in one SQLite file. The retrieval surface combines vector similarity, lexical search, and graph traversal over the same store.
+MindGraph is a local, graph-augmented retrieval engine for personal Markdown knowledge bases. It ingests a directory of notes, extracts a typed `[[link]]` document graph, chunks the body text, and stores everything in one SQLite file. The core profile provides lexical search and graph traversal; an optional semantic profile adds vector similarity over the same store.
 
 This is the engine I run against Mainframe, my own Markdown knowledge base. Any vault of Markdown notes with `[[wikilink]]` syntax (Obsidian, Foam, Logseq with the right setting) works the same way.
+
+## Installation profiles
+
+The base package is deliberately local and dependency-light. It does not
+install Torch, CUDA, or an MCP SDK.
+
+```bash
+pip install .
+pip install '.[semantic]'  # add sentence-transformers for vector retrieval
+pip install '.[mcp]'       # add the supported MCP v1 SDK
+pip install '.[full]'      # semantic + MCP
+```
+
+The `dev` extra adds test dependencies without pulling either runtime profile.
+Install the extra required by the operation you intend to run.
 
 ## What this does
 
@@ -12,9 +27,10 @@ This is the engine I run against Mainframe, my own Markdown knowledge base. Any 
 - Computes a stable document ID from `sha256(relative_path)` for ordinary single-root ingest, or from `index_id + namespace + source_path` for scoped multi-root ingest.
 - Skips re-embedding when the content hash matches an existing row.
 - Chunks the Truth body into paragraphs packed up to `max_chars`, keeping paragraphs whole.
-- Embeds chunks with a selectable model (`--embedder`: `minilm`, `bge-small`, `e5-small`; default MiniLM) at 384 dimensions per DB.
+- Removes fenced code, table structure, reference-only lists, metadata rows, and explicit Markdown alert/callout blocks from semantic chunks. Ordinary blockquotes remain because they may contain substantive evidence; the full Truth body remains in the lexical lane.
+- Optionally embeds chunks with a selectable model (`--embedder`: `minilm`, `bge-small`, `e5-small`; default MiniLM) at 384 dimensions per DB.
 - Optional `--embed-template mainframe` prefixes domain/type/title at ingest and `[intent=query]` at query time.
-- Writes documents, chunks, embeddings, FTS5 rows, and edges to one SQLite file with `sqlite-vec` and FTS5 attached.
+- Writes documents, chunks, optional embeddings, FTS5 rows, and edges to one SQLite file with `sqlite-vec` and FTS5 attached.
 
 ## What it ranks
 
@@ -25,7 +41,7 @@ This is the engine I run against Mainframe, my own Markdown knowledge base. Any 
 
 Each result carries a `signal` label (`lexical`, `semantic`, `fused`, `expanded`, or `associated`), a `rrf_score`, and the per-signal `lexical_rank` and `semantic_rank` integers, so the attribution is mechanically verifiable. Ties break by `(doc_id, chunk_index)` lexicographic for deterministic output. Free-text queries pass through an FTS5 sanitizer that strips operator characters and the uppercase keywords `AND`, `OR`, `NOT`, `NEAR`, then OR-joins the surviving tokens.
 
-Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_root`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
+Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. The local `source_root` is retained for internal provenance but is omitted from serialized CLI/MCP results so host-specific absolute paths do not cross the boundary. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
 
 ### Tuning the scope warnings
 
@@ -80,13 +96,17 @@ classify_query_scope("some unfiled notes", vocab)
 - Only Markdown is a first-class input. PDFs and other formats are out of scope for this asset.
 - Use a **separate SQLite file per embedder** (`--embedder` sets `vec_chunks` dimensions at init). Re-ingest the full scope into each eval DB; do not swap models in-place on one DB.
 - Lexical-only results surface chunk index 0 because there is no semantic ranking to pick a better chunk from. Fused and semantic results surface the best-ranked chunk per document.
+- A lexical-only index has no semantic vectors; use `--lexical-only` for both ingest and query, and create a fresh index when switching to semantic retrieval.
 - Retrieval is nomination, not verification. A retrieved chunk is a candidate for a reader to read, not a verified source for any claim.
+- Normal ingest and query never acquire models from the network. Run the explicit `mindgraph bootstrap-model` setup command once before semantic ingest/query.
 
 ## Useful commands
 
 ```bash
 mindgraph init --db mindgraph.sqlite
+mindgraph bootstrap-model --embedder minilm
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite
+mindgraph ingest path/to/your/vault --db lexical.sqlite --lexical-only
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --embedder bge-small --embed-template mainframe
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --verbose
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --index-id knowledge --trust-profile durable_knowledge --namespace knowledge --display-prefix knowledge
@@ -98,6 +118,7 @@ mindgraph query "..." --db mindgraph.sqlite --expand
 mindgraph query "..." --db mindgraph.sqlite --expand --depth 2 --expand-top-k 10
 mindgraph query "..." --db mindgraph.sqlite --associate --associate-top-k 10
 mindgraph query "..." --db mindgraph.sqlite --embedder e5-small --embed-template mainframe
+mindgraph query "..." --db lexical.sqlite --lexical-only
 mindgraph neighbors <doc_id> --db mindgraph.sqlite
 mindgraph neighbors <doc_id> --db mindgraph.sqlite --json
 mindgraph serve-mcp --db mindgraph.sqlite
@@ -126,11 +147,22 @@ mindgraph daemon-stop
 The proxy does not start the daemon for you. See the [MCP](#mcp) section for
 declaring scopes, connecting clients, and what is not established.
 
-First ingest on a fresh machine downloads and caches the embedding model. First query also loads the model to embed the query text, and logs the same line. Subsequent runs reuse the cached model.
+Semantic model acquisition is an explicit setup step. `bootstrap-model` may
+use the configured model hub and caches the selected model; normal ingest and
+query then load it cache-only. If the cache is missing, the command fails with
+an instruction to install the semantic extra and run `bootstrap-model`.
 
 ## Try it
 
-A small seven-file Markdown vault under `examples/example-vault/` exercises every retrieval path the engine exposes: lexical-only matches, semantic-only matches, fused matches, dangling graph edges, and graph expansion. Run the sequence below from the asset root after `pip install -e .` to reproduce the captures. The captures regenerate from `scripts/run_example_smoke.py` against a fresh `/tmp/mindgraph-example/db.sqlite`.
+A small seven-file Markdown vault under `examples/example-vault/` exercises every retrieval path the engine exposes: lexical-only matches, semantic-only matches, fused matches, dangling graph edges, and graph expansion. Run the sequence below from the asset root after `pip install -e '.[full]'` and `mindgraph bootstrap-model` to reproduce the semantic captures. The captures regenerate from `scripts/run_example_smoke.py` against a fresh temporary database.
+
+### Bootstrap the semantic model
+
+```
+$ mindgraph bootstrap-model --embedder minilm
+INFO    mindgraph | Acquiring embedding model (all-MiniLM-L6-v2)...
+Embedding model ready: all-MiniLM-L6-v2 (384 dimensions)
+```
 
 ### Initialize the database
 
@@ -141,11 +173,11 @@ INFO    mindgraph | Initialized database at /tmp/mindgraph-example/db.sqlite
 
 ### Ingest the example vault
 
-The first ingest downloads the MiniLM model and logs one canonical line so the first-run latency is visible.
+The model was acquired by the explicit bootstrap step before ingest. Ingest
+only loads the local cache.
 
 ```
 $ mindgraph ingest examples/example-vault --db /tmp/mindgraph-example/db.sqlite
-INFO    mindgraph | Loading embedding model (all-MiniLM-L6-v2)...
 INFO    mindgraph | ingested: balancing-loops.md (1 chunks, 1 edges)
 INFO    mindgraph | ingested: bounded-rationality.md (1 chunks, 1 edges)
 INFO    mindgraph | ingested: feedback-loops.md (1 chunks, 2 edges)
@@ -268,6 +300,11 @@ $ mindgraph neighbors c8a1be119b7ad0c3 --db /tmp/mindgraph-example/db.sqlite
 MindGraph ships MCP transports around the same retrieval code used by the CLI.
 It does not add ranking behavior, change the database schema, or turn retrieved
 chunks into verified claims.
+
+Install the `mcp` extra for the transport surface. The MCP server's default
+query path also needs the `semantic` extra and a bootstrapped model; the
+dependency-light core remains usable independently through lexical-only CLI
+ingest/query.
 
 Two transports ship. Pick by how many databases you need open at once.
 

@@ -169,6 +169,13 @@ def create_server(
                 embedder_spec, question, template=embed_template
             )
         try:
+            if db.get_semantic_enabled(conn) is False and (
+                semantic_top_k > 0 or associate
+            ):
+                return _tool_error(
+                    "This database is lexical-only; re-ingest it without "
+                    "--lexical-only before using semantic MCP queries."
+                )
             results = _run_with_lock_retry(
                 lambda: query_mod.run_query(
                     conn,
@@ -272,6 +279,11 @@ def create_shared_server(
             activity = lifecycle.request() if lifecycle else _null_context()
             with activity:
                 conn, trust_profile = selected(scope)
+                if db.get_semantic_enabled(conn) is False:
+                    return _tool_error(
+                        "This database is lexical-only; re-ingest it without "
+                        "--lexical-only before using semantic MCP queries."
+                    )
                 formatted = (
                     format_query_text(embedder_spec, question, template=embed_template)
                     if embedder_spec is not None else question
@@ -348,12 +360,7 @@ def _ensure_document_exists(conn: sqlite3.Connection, doc_id: str) -> None:
 def _intent_resolution_payload(
     resolution: intent_mod.IntentResolution,
 ) -> dict:
-    payload = resolution.model_dump()
-    payload["method"] = payload.pop("resolution_method")
-    payload["matched_goals"] = payload.pop("matched_goal_ids")
-    payload["prerequisite_goals"] = payload.pop("prerequisite_goal_ids")
-    payload["path"] = payload.pop("intent_path")
-    return payload
+    return resolution.as_transport_payload()
 
 
 def _resolve_intent_payload(
@@ -422,12 +429,7 @@ def _citation_partition(results) -> dict:
     documents have taken the top rank. Separating them is what makes the
     warning act rather than merely appear.
     """
-    candidates, excluded = query_mod.partition_by_citation(results)
-    return {
-        "results": [r.model_dump() for r in candidates],
-        "not_citable": [r.model_dump() for r in excluded],
-        "citation_counts": query_mod.citation_counts(results),
-    }
+    return query_mod.citation_partition_payload(results)
 
 
 def _json_result(payload) -> CallToolResult:

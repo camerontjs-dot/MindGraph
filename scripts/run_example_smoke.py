@@ -5,10 +5,9 @@ examples/example-vault/ vault, using the real MiniLM model. Prints fenced
 Markdown blocks formatted for direct paste into the asset README's "Try it"
 section.
 
-First-run latency note: the first ingest downloads the MiniLM model on a fresh
-machine; the script keeps the `Loading embedding model (all-MiniLM-L6-v2)...`
-log line on the first block so the cost is visible. Subsequent blocks filter
-the log line to reduce noise.
+Model acquisition is explicit: the script runs `mindgraph bootstrap-model`
+before creating the index. Normal ingest/query then exercise the cache-only
+runtime contract.
 
 Usage (from the asset root):
 
@@ -19,7 +18,6 @@ Inspect `/tmp/captures.md` and paste blocks into the README's "Try it" section.
 
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from mindgraph import parser
@@ -48,12 +46,11 @@ _NOISE_SUBSTRINGS = (
 )
 
 
-def _filter_noise(stderr: str, *, keep_loading_log: bool) -> str:
+def _filter_noise(stderr: str) -> str:
     """Drop HuggingFace and sentence-transformers chatter.
 
-    Keeps the canonical `Loading embedding model (all-MiniLM-L6-v2)...` line
-    when `keep_loading_log` is True so first-run latency stays visible in the
-    initial capture block.
+    Model acquisition is represented by the explicit bootstrap block, so
+    loader chatter is not needed in later captures.
     """
     kept: list[str] = []
     for line in stderr.splitlines():
@@ -61,8 +58,6 @@ def _filter_noise(stderr: str, *, keep_loading_log: bool) -> str:
         if not stripped:
             continue
         if "Loading embedding model" in stripped:
-            if keep_loading_log:
-                kept.append(line)
             continue
         if any(noise in stripped for noise in _NOISE_SUBSTRINGS):
             continue
@@ -70,21 +65,19 @@ def _filter_noise(stderr: str, *, keep_loading_log: bool) -> str:
     return "\n".join(kept)
 
 
-def run(cmd: list[str], *, keep_loading_log: bool = False) -> tuple[str, str]:
+def run(cmd: list[str]) -> tuple[str, str]:
     """Run a subprocess and capture stdout + stderr.
 
     Filters HuggingFace and sentence-transformers chatter from stderr so the
-    README captures stay readable. Keeps the canonical model-loading log line
-    when `keep_loading_log` is True.
+    README captures stay readable.
     """
     proc = subprocess.run(cmd, capture_output=True, text=True)
     stdout = proc.stdout
-    stderr = _filter_noise(proc.stderr, keep_loading_log=keep_loading_log)
+    stderr = _filter_noise(proc.stderr)
     if proc.returncode != 0:
-        print(
-            f"WARNING: command exited with code {proc.returncode}: "
-            f"{' '.join(cmd)}",
-            file=sys.stderr,
+        raise RuntimeError(
+            f"command exited with code {proc.returncode}: {' '.join(cmd)}\n"
+            f"{stderr}"
         )
     return stdout, stderr
 
@@ -109,7 +102,16 @@ def main() -> None:
     reset_db_dir()
     mindgraph_bin = str(ASSET_ROOT / ".venv" / "bin" / "mindgraph")
 
-    # 1. init
+    # 1. explicit model acquisition
+    out, err = run([mindgraph_bin, "bootstrap-model", "--embedder", "minilm"])
+    emit_block(
+        "Bootstrap the semantic model",
+        ["mindgraph", "bootstrap-model", "--embedder", "minilm"],
+        out,
+        err,
+    )
+
+    # 2. init
     out, err = run([mindgraph_bin, "init", "--db", DB_PATH_STR])
     emit_block(
         "Initialize the database",
@@ -118,10 +120,9 @@ def main() -> None:
         err,
     )
 
-    # 2. ingest — keep the loading log on the first model use for honesty
+    # 3. ingest — normal runtime is cache-only after bootstrap
     out, err = run(
-        [mindgraph_bin, "ingest", str(VAULT_PATH), "--db", DB_PATH_STR],
-        keep_loading_log=True,
+        [mindgraph_bin, "ingest", str(VAULT_PATH), "--db", DB_PATH_STR]
     )
     emit_block(
         "Ingest the example vault",
@@ -136,7 +137,7 @@ def main() -> None:
         err,
     )
 
-    # 3. lexical-heavy query (unique keyword 'antinet' in mental-models-overview)
+    # 4. lexical-heavy query (unique keyword 'antinet' in mental-models-overview)
     out, err = run(
         [
             mindgraph_bin,
@@ -163,7 +164,7 @@ def main() -> None:
         err,
     )
 
-    # 4. concept query (paraphrase-friendly term)
+    # 5. concept query (paraphrase-friendly term)
     out, err = run(
         [
             mindgraph_bin,
@@ -190,7 +191,7 @@ def main() -> None:
         err,
     )
 
-    # 5. fused query
+    # 6. fused query
     out, err = run(
         [
             mindgraph_bin,
@@ -217,7 +218,7 @@ def main() -> None:
         err,
     )
 
-    # 6. expansion query — walk two hops from the seed
+    # 7. expansion query — walk two hops from the seed
     out, err = run(
         [
             mindgraph_bin,
@@ -250,7 +251,7 @@ def main() -> None:
         err,
     )
 
-    # 7. neighbors lookup — surfaces the dangling unicycle-mental-model target
+    # 8. neighbors lookup — surfaces the dangling unicycle-mental-model target
     archetypes_id = parser.compute_doc_id("systems-archetypes.md")
     out, err = run(
         [mindgraph_bin, "neighbors", archetypes_id, "--db", DB_PATH_STR]

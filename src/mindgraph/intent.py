@@ -329,6 +329,15 @@ class IntentResolution(_StrictModel):
     truncation_reason: Literal["max_depth", "max_nodes"] | None = None
     refusal_reason: str | None = None
 
+    def as_transport_payload(self) -> dict[str, Any]:
+        """Return the stable field names used by CLI and MCP envelopes."""
+        payload = self.model_dump()
+        payload["method"] = payload.pop("resolution_method")
+        payload["matched_goals"] = payload.pop("matched_goal_ids")
+        payload["prerequisite_goals"] = payload.pop("prerequisite_goal_ids")
+        payload["path"] = payload.pop("intent_path")
+        return payload
+
     def as_contract_result(
         self, result_id: str, behaviors: tuple[str, ...] = ()
     ) -> dict[str, Any]:

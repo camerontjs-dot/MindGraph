@@ -105,9 +105,17 @@ DEFAULT_EMBEDDING_DIMS = 384
 
 
 def init_db(
-    db_path: str = "mindgraph.sqlite", *, embedding_dims: int = DEFAULT_EMBEDDING_DIMS
+    db_path: str = "mindgraph.sqlite",
+    *,
+    embedding_dims: int = DEFAULT_EMBEDDING_DIMS,
+    semantic_enabled: bool | None = None,
 ) -> sqlite3.Connection:
-    """Initialize the database schema for MindGraph."""
+    """Initialize the database schema for MindGraph.
+
+    ``semantic_enabled=False`` creates a lexical-only index with no vector
+    rows. ``None`` preserves the legacy behavior for existing databases and
+    leaves the mode unspecified until an ingest declares it.
+    """
     conn = get_db(db_path)
 
     with conn:
@@ -181,6 +189,25 @@ def init_db(
                 )
                 """
             )
+
+        stored_semantic = get_semantic_enabled(conn)
+        if semantic_enabled is not None:
+            if stored_semantic is not None and stored_semantic != semantic_enabled:
+                raise DatabaseError(
+                    f"Database {db_path} has semantic_enabled={stored_semantic}; "
+                    f"requested {semantic_enabled}. Use a separate DB for a "
+                    "different retrieval profile."
+                )
+            if stored_semantic is None:
+                existing_vectors = conn.execute(
+                    "SELECT COUNT(*) FROM vec_chunks"
+                ).fetchone()[0]
+                if not semantic_enabled and existing_vectors:
+                    raise DatabaseError(
+                        f"Database {db_path} already contains semantic vectors; "
+                        "create a fresh database for --lexical-only ingest."
+                    )
+                set_semantic_enabled(conn, semantic_enabled)
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS edges (
@@ -266,6 +293,7 @@ def inspect_database(
         "tables_missing": sorted(REQUIRED_QUERY_TABLES),
         "counts": {},
         "embedding_dims": None,
+        "semantic_enabled": None,
         "likely_stub": False,
     }
 
@@ -298,6 +326,7 @@ def inspect_database(
         if missing:
             report["issues"].append("missing_required_tables")
         report["embedding_dims"] = get_embedding_dims(conn)
+        report["semantic_enabled"] = get_semantic_enabled(conn)
         report["counts"] = {
             "documents": _count(conn, "SELECT COUNT(*) FROM documents")
             if "documents" in tables
@@ -399,6 +428,26 @@ def set_embedding_dims(conn: sqlite3.Connection, dims: int) -> None:
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
         (str(dims),),
+    )
+
+
+def get_semantic_enabled(conn: sqlite3.Connection) -> bool | None:
+    """Return the declared semantic mode, or None for legacy databases."""
+    row = conn.execute(
+        "SELECT value FROM index_meta WHERE key = 'semantic_enabled'"
+    ).fetchone()
+    if row is None:
+        return None
+    return row["value"] == "1"
+
+
+def set_semantic_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
+    conn.execute(
+        """
+        INSERT INTO index_meta (key, value) VALUES ('semantic_enabled', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        ("1" if enabled else "0",),
     )
 
 
@@ -517,8 +566,15 @@ def insert_chunks_and_embeddings(
     conn: sqlite3.Connection,
     doc_id: str,
     chunks: list[str],
-    embeddings: list[list[float]],
+    embeddings: list[list[float]] | None,
 ) -> None:
+    if embeddings is None:
+        for idx, text in enumerate(chunks):
+            conn.execute(
+                "INSERT INTO chunks (doc_id, chunk_index, text) VALUES (?, ?, ?)",
+                (doc_id, idx, text),
+            )
+        return
     if len(chunks) != len(embeddings):
         raise DatabaseError(
             f"chunk/embedding count mismatch for {doc_id}: "

@@ -89,7 +89,13 @@ def load_sentence_embedder(spec: EmbedderSpec):
     client has been closed`` even when the cache is warm, so we never open a
     network metadata request at query/ingest time.
     """
-    from sentence_transformers import SentenceTransformer
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ModuleNotFoundError as exc:
+        raise EmbeddingError(
+            "Semantic support is not installed. Install it with "
+            "`pip install 'mindgraph[semantic]'` before semantic ingest/query."
+        ) from exc
 
     try:
         return SentenceTransformer(spec.model_id, local_files_only=True)
@@ -100,6 +106,30 @@ def load_sentence_embedder(spec: EmbedderSpec):
             "Cache the model once while online, for example:\n"
             "  python -c \"from sentence_transformers import SentenceTransformer; "
             f"SentenceTransformer({spec.model_id!r})\""
+        ) from exc
+
+
+def bootstrap_sentence_embedder(spec: EmbedderSpec):
+    """Acquire and load a model during an explicit setup operation.
+
+    Normal ingest/query uses :func:`load_sentence_embedder`, which is
+    cache-only. This function is the only package-level path that permits the
+    SentenceTransformer loader to resolve a model from its configured hub.
+    """
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ModuleNotFoundError as exc:
+        raise EmbeddingError(
+            "Semantic support is not installed. Install it with "
+            "`pip install 'mindgraph[semantic]'` before model bootstrap."
+        ) from exc
+
+    try:
+        return SentenceTransformer(spec.model_id)
+    except Exception as exc:
+        raise EmbeddingError(
+            f"Failed to acquire embedding model {spec.model_id!r}: "
+            f"{type(exc).__name__}: {exc}."
         ) from exc
 
 

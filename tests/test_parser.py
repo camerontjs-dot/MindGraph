@@ -13,6 +13,7 @@ from mindgraph.parser import (
     parse_document,
     parse_frontmatter,
     split_page_model,
+    strip_apparatus,
 )
 
 
@@ -319,6 +320,79 @@ class TestExtractDocumentGraphEdges:
         assert {edge.target_id for edge in edges} == {docs[0].id, docs[1].id}
         hybrid_edge = next(edge for edge in edges if edge.target_id == docs[0].id)
         assert hybrid_edge.relationship_type == "extends"
+
+
+class TestStripApparatus:
+    """Document apparatus is excluded from semantic chunks, not lexical FTS."""
+
+    def test_plain_prose_is_unchanged(self):
+        body = "The retrieval floor stays at 0.40.\n\nX1 was re-run twice."
+        assert strip_apparatus(body) == body
+
+    def test_callout_banner_is_dropped(self):
+        body = "Real finding here about entailment.\n\n> **WARNING.** Quarantined capture."
+        assert "WARNING" not in strip_apparatus(body)
+        assert "entailment" in strip_apparatus(body)
+
+    def test_markdown_alert_block_is_dropped(self):
+        body = (
+            "Real finding here about entailment.\n\n"
+            "> [!WARNING]\n"
+            "> Quarantined capture.\n"
+        )
+        out = strip_apparatus(body)
+        assert "Quarantined capture" not in out
+        assert "entailment" in out
+
+    def test_substantive_blockquote_is_preserved(self):
+        body = (
+            "> The audit record reports the same tree hash after the rebuild.\n"
+            "> The result is still a nomination for inspection.\n"
+        )
+        out = strip_apparatus(body)
+        assert "same tree hash after the rebuild" in out
+        assert "nomination for inspection" in out
+
+    def test_ingest_wrapper_metadata_row_is_dropped(self):
+        body = "**Access:** 00_inbox/x.md **Fetch method:** none **Audit verdict:** pending"
+        assert strip_apparatus(body) == body  # fail-safe: nothing else survives
+        keep = "A real sentence with enough words to survive the filter.\n" + body
+        assert "Fetch method" not in strip_apparatus(keep)
+
+    def test_reference_list_is_dropped_but_citing_prose_survives(self):
+        body = (
+            "- [Some Note](10_knowledge/agents/note.md)\n"
+            "- `bin/mindgraph query`\n"
+            "\n"
+            "Retrieval degrades when `bin/mindgraph query` runs against a stub database.\n"
+        )
+        out = strip_apparatus(body)
+        assert "Some Note" not in out
+        assert "Retrieval degrades" in out
+
+    def test_tables_and_fenced_code_are_dropped(self):
+        body = "Prose that must survive the stripping pass.\n\n| a | b |\n|---|---|\n\n```bash\necho hi\n```"
+        out = strip_apparatus(body)
+        assert "echo hi" not in out and "| a |" not in out
+        assert "must survive" in out
+
+    def test_heading_keeps_its_words_and_loses_its_marker(self):
+        assert strip_apparatus("## Retrieval floor") == "Retrieval floor"
+
+    def test_all_apparatus_document_falls_back_to_original(self):
+        # An index page must stay indexable if no prose survives.
+        body = "| a | b |\n|---|---|\n\n- [One](a.md)\n- [Two](b.md)"
+        assert strip_apparatus(body) == body
+
+    def test_chunk_truth_applies_the_strip(self):
+        body = "> **WARNING.** banner text\n\nThe daemon health check returns ok when ready."
+        chunks = chunk_truth(body)
+        assert chunks and all("WARNING" not in c for c in chunks)
+
+    def test_chunk_truth_keeps_substantive_blockquote(self):
+        body = "> The quoted evidence survived two independent rebuilds."
+        chunks = chunk_truth(body)
+        assert chunks and "quoted evidence survived" in chunks[0]
 
 
 class TestChunkTruth:

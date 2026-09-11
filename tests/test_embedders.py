@@ -80,3 +80,24 @@ def test_load_sentence_embedder_missing_cache_raises_embedding_error(monkeypatch
     spec = embedders.resolve_embedder("minilm")
     with pytest.raises(EmbeddingError, match="local_files_only=True"):
         embedders.load_sentence_embedder(spec)
+
+
+def test_bootstrap_sentence_embedder_is_the_explicit_acquisition_path(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name_or_path, *args, **kwargs):
+            captured["model_name_or_path"] = model_name_or_path
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+    spec = embedders.resolve_embedder("minilm")
+    model = embedders.bootstrap_sentence_embedder(spec)
+
+    assert isinstance(model, FakeSentenceTransformer)
+    assert captured["model_name_or_path"] == "all-MiniLM-L6-v2"
+    assert captured["kwargs"] == {}

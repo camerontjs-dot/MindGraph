@@ -278,6 +278,111 @@ def extract_document_graph_edges(
 # Sentence boundary: whitespace that follows `.`, `!`, or `?`.
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
+# ---------------------------------------------------------------------------
+# Apparatus stripping (semantic lane only)
+#
+# Chunks feed the embedder; `documents_fts` is populated from the full
+# `truth_text` (db.py). This keeps paths, commands, and filenames searchable
+# in the lexical lane while preventing common document apparatus from being
+# embedded as if it were an assertion.
+# ---------------------------------------------------------------------------
+
+_FENCED_CODE = re.compile(r"^[ \t]*(?:```|~~~).*?(?:^[ \t]*(?:```|~~~)[ \t]*$|\Z)", re.M | re.S)
+_HEADING_MARKER = re.compile(r"^[ \t]*#{1,6}[ \t]+")
+_BLOCKQUOTE_LINE = re.compile(r"^[ \t]*>")
+_CALLOUT_LABEL = r"(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION|DANGER|ERROR|INFO|SUCCESS|ATTENTION)"
+_CALLOUT_START = re.compile(
+    rf"^[ \t]*>[ \t]*(?:\[!{_CALLOUT_LABEL}\]|\*\*{_CALLOUT_LABEL}(?:[.:!])?\*\*)(?=[ \t]|$)",
+    re.IGNORECASE,
+)
+_BOLD_KEY = re.compile(r"\*\*[^*\n]{1,40}:\*\*")
+_MD_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_WIKILINK = re.compile(r"\[\[[^\]]*\]\]")
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
+_URLISH = re.compile(r"\S*(?:https?://|[\w.-]+/[\w./-]+|\.(?:md|py|json|jsonl|ya?ml|sqlite|sh|plist|html))\S*")
+_LIST_MARKER = re.compile(r"^[ \t]*(?:[-*+]|\d+\.)[ \t]+")
+
+_MIN_PROSE_WORDS = 5
+
+
+def _residual_prose_words(line: str) -> int:
+    """Words left once links, paths, inline code, and bold keys are removed.
+
+    A reference line ("- [Title](path/to/note.md)") drops to nearly nothing;
+    a sentence that merely cites a path keeps its argument.
+    """
+    stripped = _MD_LINK.sub(" ", line)
+    stripped = _WIKILINK.sub(" ", stripped)
+    stripped = _INLINE_CODE.sub(" ", stripped)
+    stripped = _URLISH.sub(" ", stripped)
+    stripped = _BOLD_KEY.sub(" ", stripped)
+    stripped = re.sub(r"[^\w\s]", " ", stripped)
+    return len([w for w in stripped.split() if any(c.isalpha() for c in w)])
+
+
+def _is_apparatus_line(line: str) -> bool:
+    """True when the line is structure or reference rather than an assertion."""
+    s = line.strip()
+    if not s:
+        return False
+    if s.startswith("|") or re.fullmatch(r"[|\s:-]+", s):
+        return True                                   # table rows and rules
+    if len(_BOLD_KEY.findall(s)) >= 2:
+        return True                                   # metadata-like rows
+    has_reference = bool(
+        _MD_LINK.search(s) or _WIKILINK.search(s) or _URLISH.search(s) or _INLINE_CODE.search(s)
+    )
+    if has_reference and _residual_prose_words(s) < _MIN_PROSE_WORDS:
+        return True                                   # link lists and command dumps
+    if _LIST_MARKER.match(s) and _residual_prose_words(s) < 3:
+        return True                                   # bare enumerations
+    return False
+
+
+def _is_callout_start(line: str) -> bool:
+    """Return True only for an explicit Markdown alert/callout marker."""
+    return bool(_CALLOUT_START.match(line))
+
+
+def strip_apparatus(text: str) -> str:
+    """Remove non-assertional markup so the embedder sees prose.
+
+    Headings keep their words and lose their markers: `## Retrieval floor` is a
+    topical anchor, `##` is not. Fenced code, tables, recognized Markdown
+    alert/callout blocks, metadata rows, and reference lists are dropped
+    outright. Ordinary blockquotes are retained because a quoted passage can
+    be substantive evidence.
+
+    Fail-safe: a document that is entirely apparatus (an index page, a pure
+    table) returns unchanged rather than becoming unindexable. Losing the
+    semantic lane for a document is worse than embedding its structure.
+    """
+    if not text.strip():
+        return text
+
+    without_code = _FENCED_CODE.sub("\n", text)
+    kept: list[str] = []
+    lines = without_code.splitlines()
+    line_index = 0
+    while line_index < len(lines):
+        line = lines[line_index]
+        if _is_callout_start(line):
+            # Drop the whole contiguous blockquote only after an explicit
+            # alert marker. A later ordinary blockquote is not swallowed.
+            line_index += 1
+            while line_index < len(lines) and _BLOCKQUOTE_LINE.match(lines[line_index]):
+                line_index += 1
+            continue
+        if _is_apparatus_line(line):
+            line_index += 1
+            continue
+        kept.append(_HEADING_MARKER.sub("", line))
+        line_index += 1
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    return cleaned if cleaned else text
+
+
 
 def _hard_split(text: str, max_chars: int) -> list[str]:
     """Last-resort fixed-width cut for a unit with no usable boundary."""
@@ -331,9 +436,13 @@ def chunk_truth(truth_text: str, max_chars: int = 1000) -> list[str]:
     exceed the bound. This protects semantic recall (MiniLM truncates at ~256
     tokens, so an unsplit megachunk is mostly invisible to the embedder) and
     avoids dumping an oversized chunk into a `--json`/MCP response.
+
+    Apparatus is stripped first (see `strip_apparatus`): chunks feed the
+    embedder, while the lexical lane retains the original Truth body.
     """
     if not truth_text.strip():
         return []
+    truth_text = strip_apparatus(truth_text)
     paragraphs: list[str] = []
     for raw in re.split(r"\n\s*\n", truth_text):
         para = raw.strip()

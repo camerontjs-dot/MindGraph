@@ -4,6 +4,71 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-09-10 — Semantic apparatus stripping stays in the portable engine
+
+**Status:** Accepted for the standalone engine candidate.
+
+**Decision:** Apply a conservative `strip_apparatus()` pass only to semantic
+chunks. It removes fenced code, tables, recognized Markdown alert/callout
+blocks, metadata-like rows, and reference-only list items; heading words
+remain as topical anchors and ordinary blockquotes remain as possible
+substantive evidence. The FTS5 lane continues to index the original Truth
+body, so paths and commands remain lexically searchable. If stripping would
+remove the entire document, the original text is used as a fail-safe.
+
+**Why:** Retrieval representation and lexical source coverage have different
+jobs. Common document apparatus can dominate semantic similarity without being
+the assertion a reader needs, while removing it from the lexical lane would
+hide useful paths and identifiers. The implementation is corpus-independent
+and belongs to the engine rather than to MainFrame's operational scripts.
+
+**Consequences:** The public parser tests cover the supported shapes, the
+ordinary-blockquote negative control, and the fail-safe. Private corpus
+measurements remain qualification evidence, not runtime comments or public
+product claims. This pass does not verify claims, change source metadata, or
+alter graph extraction.
+
+**Rejected alternatives:** Removing apparatus from `truth_text` or FTS5;
+deleting every short paragraph; copying MainFrame-specific quarantine text or
+corpus thresholds into the standalone package; or keeping a second private
+semantic parser in the MainFrame mirror.
+
+---
+
+## 2026-09-10 — Separate core, semantic, and MCP installation boundaries
+
+**Status:** Accepted for the standalone engine candidate.
+
+**Decision:** Keep the base package limited to the parser, SQLite/FTS5 and
+sqlite-vec persistence, graph/query primitives, provenance models, and CLI.
+Expose sentence-transformers through the `semantic` extra, the supported
+MCP-v1 SDK through the `mcp` extra, and their combined closure through
+`full`. The CLI imports MCP adapters only when an MCP command is invoked.
+Core indexes may be built and queried explicitly with `--lexical-only` and
+record `semantic_enabled=0` in `index_meta`.
+
+Model acquisition is an explicit `bootstrap-model` operation. Normal ingest
+and query use the cache-only loader and fail with an actionable message when a
+required model is absent.
+
+**Why:** The semantic dependency closure is substantially larger than the
+portable retrieval core, and MCP ecosystem changes must not prevent basic
+lexical/graph use. Making acquisition explicit keeps normal retrieval local
+and makes network use observable.
+
+**Consequences:** A semantic index must be created separately from a
+lexical-only index. MCP transport qualification remains separate from core
+retrieval qualification. The earlier default-download description is retained
+as historical context in its original decision record; this decision governs
+the candidate behavior.
+
+**Rejected alternatives:** Keeping all dependencies mandatory; relying only on
+lazy model loading while retaining eager optional imports; silently filling a
+lexical-only index with zero vectors; or allowing normal ingest/query to
+download models in the background.
+
+---
+
 ## 2026-08-05 — Opt-in lease-aware idle exit with serialized proxy wakeup
 
 
