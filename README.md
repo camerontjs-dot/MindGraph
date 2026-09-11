@@ -27,6 +27,7 @@ Install the extra required by the operation you intend to run.
 - Computes a stable document ID from `sha256(relative_path)` for ordinary single-root ingest, or from `index_id + namespace + source_path` for scoped multi-root ingest.
 - Skips re-embedding when the content hash matches an existing row.
 - Chunks the Truth body into paragraphs packed up to `max_chars`, keeping paragraphs whole.
+- Removes fenced code, table structure, reference-only lists, metadata rows, and explicit Markdown alert/callout blocks from semantic chunks. Ordinary blockquotes remain because they may contain substantive evidence; the full Truth body remains in the lexical lane.
 - Optionally embeds chunks with a selectable model (`--embedder`: `minilm`, `bge-small`, `e5-small`; default MiniLM) at 384 dimensions per DB.
 - Optional `--embed-template mainframe` prefixes domain/type/title at ingest and `[intent=query]` at query time.
 - Writes documents, chunks, optional embeddings, FTS5 rows, and edges to one SQLite file with `sqlite-vec` and FTS5 attached.

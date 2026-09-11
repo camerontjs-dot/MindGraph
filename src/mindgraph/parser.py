@@ -289,6 +289,12 @@ _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 _FENCED_CODE = re.compile(r"^[ \t]*(?:```|~~~).*?(?:^[ \t]*(?:```|~~~)[ \t]*$|\Z)", re.M | re.S)
 _HEADING_MARKER = re.compile(r"^[ \t]*#{1,6}[ \t]+")
+_BLOCKQUOTE_LINE = re.compile(r"^[ \t]*>")
+_CALLOUT_LABEL = r"(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION|DANGER|ERROR|INFO|SUCCESS|ATTENTION)"
+_CALLOUT_START = re.compile(
+    rf"^[ \t]*>[ \t]*(?:\[!{_CALLOUT_LABEL}\]|\*\*{_CALLOUT_LABEL}(?:[.:!])?\*\*)(?=[ \t]|$)",
+    re.IGNORECASE,
+)
 _BOLD_KEY = re.compile(r"\*\*[^*\n]{1,40}:\*\*")
 _MD_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
 _WIKILINK = re.compile(r"\[\[[^\]]*\]\]")
@@ -319,8 +325,6 @@ def _is_apparatus_line(line: str) -> bool:
     s = line.strip()
     if not s:
         return False
-    if s.startswith(">"):
-        return True                                   # callouts and banners
     if s.startswith("|") or re.fullmatch(r"[|\s:-]+", s):
         return True                                   # table rows and rules
     if len(_BOLD_KEY.findall(s)) >= 2:
@@ -335,12 +339,19 @@ def _is_apparatus_line(line: str) -> bool:
     return False
 
 
+def _is_callout_start(line: str) -> bool:
+    """Return True only for an explicit Markdown alert/callout marker."""
+    return bool(_CALLOUT_START.match(line))
+
+
 def strip_apparatus(text: str) -> str:
     """Remove non-assertional markup so the embedder sees prose.
 
     Headings keep their words and lose their markers: `## Retrieval floor` is a
-    topical anchor, `##` is not. Fenced code, tables, callouts, metadata rows,
-    and reference lists are dropped outright.
+    topical anchor, `##` is not. Fenced code, tables, recognized Markdown
+    alert/callout blocks, metadata rows, and reference lists are dropped
+    outright. Ordinary blockquotes are retained because a quoted passage can
+    be substantive evidence.
 
     Fail-safe: a document that is entirely apparatus (an index page, a pure
     table) returns unchanged rather than becoming unindexable. Losing the
@@ -351,10 +362,22 @@ def strip_apparatus(text: str) -> str:
 
     without_code = _FENCED_CODE.sub("\n", text)
     kept: list[str] = []
-    for line in without_code.splitlines():
+    lines = without_code.splitlines()
+    line_index = 0
+    while line_index < len(lines):
+        line = lines[line_index]
+        if _is_callout_start(line):
+            # Drop the whole contiguous blockquote only after an explicit
+            # alert marker. A later ordinary blockquote is not swallowed.
+            line_index += 1
+            while line_index < len(lines) and _BLOCKQUOTE_LINE.match(lines[line_index]):
+                line_index += 1
+            continue
         if _is_apparatus_line(line):
+            line_index += 1
             continue
         kept.append(_HEADING_MARKER.sub("", line))
+        line_index += 1
 
     cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
     return cleaned if cleaned else text

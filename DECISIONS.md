@@ -9,11 +9,12 @@ Architectural decision records for MindGraph. Each entry records what was decide
 **Status:** Accepted for the standalone engine candidate.
 
 **Decision:** Apply a conservative `strip_apparatus()` pass only to semantic
-chunks. It removes fenced code, tables, callouts, metadata-like rows, and
-reference-only list items; heading words remain as topical anchors. The FTS5
-lane continues to index the original Truth body, so paths and commands remain
-lexically searchable. If stripping would remove the entire document, the
-original text is used as a fail-safe.
+chunks. It removes fenced code, tables, recognized Markdown alert/callout
+blocks, metadata-like rows, and reference-only list items; heading words
+remain as topical anchors and ordinary blockquotes remain as possible
+substantive evidence. The FTS5 lane continues to index the original Truth
+body, so paths and commands remain lexically searchable. If stripping would
+remove the entire document, the original text is used as a fail-safe.
 
 **Why:** Retrieval representation and lexical source coverage have different
 jobs. Common document apparatus can dominate semantic similarity without being
@@ -21,10 +22,11 @@ the assertion a reader needs, while removing it from the lexical lane would
 hide useful paths and identifiers. The implementation is corpus-independent
 and belongs to the engine rather than to MainFrame's operational scripts.
 
-**Consequences:** The public parser tests cover the supported shapes and the
-fail-safe. Private corpus measurements remain qualification evidence, not
-runtime comments or public product claims. This pass does not verify claims,
-change source metadata, or alter graph extraction.
+**Consequences:** The public parser tests cover the supported shapes, the
+ordinary-blockquote negative control, and the fail-safe. Private corpus
+measurements remain qualification evidence, not runtime comments or public
+product claims. This pass does not verify claims, change source metadata, or
+alter graph extraction.
 
 **Rejected alternatives:** Removing apparatus from `truth_text` or FTS5;
 deleting every short paragraph; copying MainFrame-specific quarantine text or

@@ -334,6 +334,25 @@ class TestStripApparatus:
         assert "WARNING" not in strip_apparatus(body)
         assert "entailment" in strip_apparatus(body)
 
+    def test_markdown_alert_block_is_dropped(self):
+        body = (
+            "Real finding here about entailment.\n\n"
+            "> [!WARNING]\n"
+            "> Quarantined capture.\n"
+        )
+        out = strip_apparatus(body)
+        assert "Quarantined capture" not in out
+        assert "entailment" in out
+
+    def test_substantive_blockquote_is_preserved(self):
+        body = (
+            "> The audit record reports the same tree hash after the rebuild.\n"
+            "> The result is still a nomination for inspection.\n"
+        )
+        out = strip_apparatus(body)
+        assert "same tree hash after the rebuild" in out
+        assert "nomination for inspection" in out
+
     def test_ingest_wrapper_metadata_row_is_dropped(self):
         body = "**Access:** 00_inbox/x.md **Fetch method:** none **Audit verdict:** pending"
         assert strip_apparatus(body) == body  # fail-safe: nothing else survives
@@ -369,6 +388,11 @@ class TestStripApparatus:
         body = "> **WARNING.** banner text\n\nThe daemon health check returns ok when ready."
         chunks = chunk_truth(body)
         assert chunks and all("WARNING" not in c for c in chunks)
+
+    def test_chunk_truth_keeps_substantive_blockquote(self):
+        body = "> The quoted evidence survived two independent rebuilds."
+        chunks = chunk_truth(body)
+        assert chunks and "quoted evidence survived" in chunks[0]
 
 
 class TestChunkTruth:
