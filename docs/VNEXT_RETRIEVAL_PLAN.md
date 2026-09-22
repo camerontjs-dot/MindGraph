@@ -29,6 +29,24 @@ The live standalone engine already provides:
 
 vNext should improve that system by measurement rather than replacing it by intuition.
 
+## Failure model
+
+The evaluation should classify retrieval failures before selecting a remedy. At minimum distinguish:
+
+- **lexical mismatch**: relevant material uses different terms from the query;
+- **dense semantic mismatch**: the embedder fails to bridge the intended concept or domain vocabulary;
+- **chunk/context misalignment**: the right source exists but the indexed representation omits the title, section, neighboring context, or other information needed to retrieve or interpret it;
+- **first-stage recall failure**: the relevant item never enters the candidate pool;
+- **ranking failure**: the relevant item is in the candidate pool but ranks too low;
+- **graph-only relevance**: linked material is useful but not recoverable from text similarity alone;
+- **duplicate/redundant admission**: repeated material consumes budget without adding information;
+- **stale/superseded admission**: historically related material outranks the current source when currentness is known;
+- **query ambiguity**: one query mixes intents or leaves the intended scope underdetermined;
+- **authority confusion**: a derived summary, agent output, or weaker-trust source is surfaced without preserving its different authority;
+- **context-budget failure**: useful retrieval is technically correct but too expensive to hand to the consumer.
+
+A retrieval change should be justified by the failure class it measurably improves. Do not treat every miss as an embedding-model problem.
+
 ## Product contract: canonical nomination
 
 Introduce a stable, typed nomination object as the canonical retrieval product. Human and agent surfaces should be projections of the same underlying result.
@@ -129,7 +147,8 @@ Prefer real historical MainFrame queries where they can be used safely. Syntheti
 Primary retrieval metrics:
 
 - mandatory-context Recall@K;
-- MRR and/or nDCG where graded relevance is useful;
+- Precision@K where top-K cleanliness matters;
+- MRR and/or nDCG where ordering or graded relevance is useful;
 - irrelevant-context admission;
 - hard-negative confusion rate;
 - stale/superseded admission;
@@ -141,6 +160,7 @@ Context-efficiency metrics:
 - tokens surfaced per successful query;
 - tokens expanded per successful query;
 - percentage of nominations expanded by an agent or human;
+- nomination selection precision/recall: whether a consumer chooses the right items to expand from the compact projection;
 - missed-required-context caused by compact nomination;
 - context budget required to hit the target recall.
 
@@ -182,10 +202,14 @@ Evaluate changes that do not alter model weights:
 
 - better deterministic metadata/context prefixes;
 - document title/domain/type/section context;
+- neighboring heading or bounded structural context;
 - chunk boundaries aligned to Markdown structure;
-- contextualized chunks;
+- deterministic contextualized chunks;
+- generated chunk-specific context as a separate, explicitly derived indexing feature;
 - query intent templates;
 - deduplication and stale/superseded handling.
+
+Generated indexing context must remain distinguishable from source text. It may improve retrieval, but it must not become source authority or silently alter what the source says.
 
 The purpose is to determine whether the apparent embedding weakness is actually a representation problem.
 
@@ -199,7 +223,11 @@ Compare:
 - lexical + semantic + graph features;
 - association;
 - graph expansion;
+- graph proximity or typed-edge features as explicit ranking signals;
+- bounded query rewriting or multi-query retrieval when ambiguity/lexical mismatch is demonstrated;
 - alternative fusion/ranking only when a failure case justifies it.
+
+Do not assume that every graph edge is a relevance edge. Graph features should preserve edge type and be evaluated for both rescue and noise.
 
 Keep signal attribution inspectable.
 
@@ -210,6 +238,10 @@ If first-stage retrieval has good recall but poor ordering or excessive irreleva
 Reranking is preferable to embedding fine-tuning when the correct material is already being retrieved but ranked poorly.
 
 Keep the first-stage retrieval receipt available so reranking does not erase why an item was originally nominated.
+
+Initial reranker experiments should favor small, local cross-encoders over large general models. Suitable families to benchmark include MS-MARCO MiniLM cross-encoders and compact BGE rerankers. Candidate-set size, latency, memory, input-length limits, and Apple Silicon behavior are part of the result.
+
+A reranker is indicated when first-stage Recall@K is already high but the required item is consistently ordered poorly. It cannot repair a source that never entered the candidate set.
 
 ### Stage 5: embedding adaptation experiment
 
@@ -223,7 +255,9 @@ Candidate training data:
 - synthetic queries generated from MainFrame documents, then filtered;
 - graph-informed positives only where the graph relation actually implies retrieval relevance.
 
-Candidate methods should include contrastive retrieval training with hard negatives. If data remains sparse, evaluate unsupervised or weakly supervised domain-adaptation methods such as synthetic query generation plus teacher/reranker pseudo-labeling.
+Candidate methods should include contrastive retrieval training with hard negatives. Evaluate training recipes such as MultipleNegativesRankingLoss or cached large-batch variants, guided-negative approaches such as GIST-style training where justified, and Matryoshka-style objectives when reduced embedding dimensions are operationally valuable.
+
+If labeled data remains sparse, evaluate weakly supervised domain-adaptation methods such as GPL-style generative pseudo-labeling, InPars/Promptagator-style synthetic query generation, and teacher/reranker pseudo-labeling or distillation. These are candidate apparatus, not assumed improvements.
 
 Avoid training on all graph neighbors as positives. A wikilink establishes a relationship, not necessarily that either document answers the same query.
 
@@ -245,7 +279,10 @@ An embedding fine-tune is justified only when all are true:
 6. there is enough training signal to avoid merely memorizing the evaluation corpus;
 7. the adapted model improves held-out MainFrame retrieval by a preregistered margin;
 8. gains survive negative controls and do not materially degrade general retrieval cases;
-9. inference/index cost remains acceptable for normal local MainFrame use.
+9. inference/index cost remains acceptable for normal local MainFrame use;
+10. the improvement survives a held-out test split whose documents/queries were not used to generate or tune the training pairs.
+
+The required improvement margin should be preregistered after the baseline is measured. Do not hard-code a recall threshold or percentage gain before the benchmark reveals the current error distribution and operational cost.
 
 If these conditions are not met, retain the general embedder.
 
@@ -253,13 +290,17 @@ If these conditions are not met, retain the general embedder.
 
 Do not select a new default model in this planning PR.
 
-The current selectable MiniLM, BGE-small, and E5-small models are useful baselines. Later evaluation may add newer compact models, but model choice should follow MainFrame-specific measurements rather than public leaderboard position.
+The current selectable MiniLM, BGE-small, and E5-small models are useful baselines. Later evaluation may add newer compact or long-context families such as GTE/ModernBERT, Nomic-style Matryoshka embeddings, EmbeddingGemma, Qwen embedding models, or stronger BGE/E5 variants when they are locally practical and their licenses/runtime requirements are acceptable.
 
-If training is attempted, keep the model/backend pluggable and preserve the ability to rebuild an index against the previous model for comparison.
+Do not copy public leaderboard ordering into the product decision. Long context, multilingual support, code retrieval, or larger parameter counts are useful only if they improve the MainFrame benchmark enough to justify their memory, latency, index-size, and re-index cost.
+
+If training is attempted, keep the model/backend pluggable and preserve the ability to rebuild an index against the previous model for comparison. Verify exact model revision, license, dimensions, context length, and runtime requirements at experiment time rather than freezing fast-moving model-card facts in this plan.
 
 ## Training-data governance
 
 MainFrame data is not an ordinary public training corpus.
+
+Local/offline processing is the default for MainFrame-specific retrieval evaluation, synthetic-query generation, reranking, and model adaptation. Sending MainFrame text to an external service requires a separate explicit authorization and a defined data-egress boundary.
 
 Any model-adaptation experiment should state:
 
@@ -273,6 +314,15 @@ Any model-adaptation experiment should state:
 - whether the resulting weights are private or publishable.
 
 Do not publish adapted weights or training examples by default.
+
+Weak labels need special care:
+
+- a wikilink establishes a relationship, not query relevance;
+- project membership establishes scope proximity, not answer relevance;
+- an agent opening a file does not prove the file was useful;
+- an unclicked or unselected result is not automatically a negative;
+- hard negatives should be manually judged, teacher-scored, or otherwise justified strongly enough for the training claim;
+- train/dev/test separation should prevent the same source-derived synthetic task from leaking into evaluation.
 
 ## Compatibility
 
@@ -312,6 +362,32 @@ The vNext evaluation should explicitly test ideas supported by current retrieval
 - graph retrieval as a distinct signal rather than hidden dense-score modification.
 
 These are hypotheses for MainFrame, not assumed improvements.
+
+Primary references for the research plan:
+
+- Cormack, Clarke, and Büttcher, *Reciprocal Rank Fusion outperforms Condorcet and individual rank learning methods* (SIGIR 2009): https://doi.org/10.1145/1571941.1572114
+- Anthropic, *Contextual Retrieval*: https://www.anthropic.com/engineering/contextual-retrieval
+- Sentence Transformers training/loss documentation: https://www.sbert.net/docs/package_reference/sentence_transformer/losses.html
+- FlagEmbedding fine-tuning and hard-negative guidance: https://github.com/FlagOpen/FlagEmbedding
+- Wang et al., *GPL: Generative Pseudo Labeling for Unsupervised Domain Adaptation of Dense Retrieval*: https://arxiv.org/abs/2112.07577
+- Bonifacio et al., *InPars: Data Augmentation for Information Retrieval using Large Language Models*: https://arxiv.org/abs/2202.05144
+- Dai et al., *Promptagator: Few-shot Dense Retrieval From 8 Examples*: https://arxiv.org/abs/2209.11755
+
+The external results above justify testing these mechanisms, not assuming that their reported gains transfer to MainFrame.
+
+## Current decision after research
+
+Do **not** initiate embedding fine-tuning as the next vNext implementation step.
+
+The first successor should be research infrastructure: freeze a MainFrame retrieval benchmark and baseline the current engine. After that, change one retrieval variable at a time.
+
+The decision tree is:
+
+- **representation failure** -> improve chunk/context representation;
+- **candidate recall failure** -> improve first-stage retrieval, query formulation, graph candidate generation, or only then the embedder;
+- **ordering failure with adequate recall** -> evaluate reranking;
+- **graph-only misses** -> evaluate bounded graph candidate/ranking features;
+- **persistent domain-specific dense-recall failure after the above** -> authorize a separate embedding-adaptation experiment.
 
 ## Non-goals
 
