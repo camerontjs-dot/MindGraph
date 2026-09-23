@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse
 from starlette.requests import Request
 
 from mindgraph import db
+from mindgraph import graph_admission as graph_admission_mod
 from mindgraph import query as query_mod
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph import intent as intent_mod
@@ -147,7 +148,11 @@ def create_server(
             "With envelope=true, returns "
             "{schema_version, intent_resolution, routing, results} where "
             "routing is single-database metadata for this MCP-bound index "
-            "(not multi-index federation)."
+            "(not multi-index federation). "
+            "With envelope=true and graph_admission=true, that envelope also "
+            "includes graph_admissions (zero or one GraphAdmission). "
+            "graph_admission requires envelope=true. The default array and "
+            "the default envelope omit the field."
         ),
     )
     def query_tool(
@@ -162,7 +167,10 @@ def create_server(
         associate_top_k: int = query_mod.DEFAULT_ASSOCIATE_TOP_K,
         associate_seed_k: int = query_mod.DEFAULT_ASSOCIATE_SEED_K,
         envelope: bool = False,
+        graph_admission: bool = False,
     ) -> CallToolResult:
+        if graph_admission and not envelope:
+            return _tool_error("graph_admission requires envelope=true")
         formatted_question = question
         if embedder_spec is not None:
             formatted_question = format_query_text(
@@ -200,6 +208,16 @@ def create_server(
                     results,
                     intent_db_path=intent_db_path,
                 )
+                if graph_admission:
+                    payload["graph_admissions"] = [
+                        item.model_dump()
+                        for item in graph_admission_mod.project_graph_admissions(
+                            conn,
+                            results,
+                            query_text=formatted_question,
+                            k=final_top_k,
+                        )
+                    ]
                 return _json_result(payload)
             return _json_result([result.model_dump() for result in results])
         except sqlite3.OperationalError as e:
@@ -274,7 +292,12 @@ def create_shared_server(
             ) from exc
 
     @server.tool(name="query")
-    def scoped_query(question: str, scope: str, final_top_k: int = query_mod.DEFAULT_FINAL_TOP_K) -> CallToolResult:
+    def scoped_query(
+        question: str,
+        scope: str,
+        final_top_k: int = query_mod.DEFAULT_FINAL_TOP_K,
+        graph_admission: bool = False,
+    ) -> CallToolResult:
         try:
             activity = lifecycle.request() if lifecycle else _null_context()
             with activity:
@@ -288,11 +311,42 @@ def create_shared_server(
                     format_query_text(embedder_spec, question, template=embed_template)
                     if embedder_spec is not None else question
                 )
-                rows = _run_with_lock_retry(
-                    lambda: query_mod.run_query(conn, formatted, embedder, final_top_k=final_top_k)
-                )
-                return _json_result({"scope": scope, "trust_profile": trust_profile,
-                                     "results": [row.model_dump() for row in rows]})
+                # The default call does not expand. Opt-in admission reads the
+                # existing depth-1 expansion because this tool has no expand flag.
+                if graph_admission:
+                    rows = _run_with_lock_retry(
+                        lambda: query_mod.run_query(
+                            conn,
+                            formatted,
+                            embedder,
+                            final_top_k=final_top_k,
+                            expand=True,
+                            expand_depth=1,
+                        )
+                    )
+                else:
+                    rows = _run_with_lock_retry(
+                        lambda: query_mod.run_query(
+                            conn, formatted, embedder, final_top_k=final_top_k
+                        )
+                    )
+                payload = {
+                    "scope": scope,
+                    "trust_profile": trust_profile,
+                    "results": [row.model_dump() for row in rows],
+                }
+                if graph_admission:
+                    payload["graph_admissions"] = [
+                        item.model_dump()
+                        for item in graph_admission_mod.project_graph_admissions(
+                            conn,
+                            rows,
+                            query_text=formatted,
+                            k=final_top_k,
+                            scope_index=scope,
+                        )
+                    ]
+                return _json_result(payload)
         except sqlite3.OperationalError as exc:
             return _tool_error(f"Database error: {exc}")
         except MindgraphError as exc:

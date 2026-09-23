@@ -4,6 +4,28 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-09-23 — Opt-in bounded graph admission
+
+**Status:** Accepted for this workbench slice. Not promoted.
+
+**Decision:** Add an opt-in projection that may attach at most one `GraphAdmission` to an already-produced depth-1 expanded query. Legacy `run_query`, the default CLI list, the default CLI and single-database MCP envelopes, and the default shared `{scope, trust_profile, results}` response stay unchanged.
+
+**Context:** Issue #9 found a graph-only leaf already present in expanded output and absent from the fused top-10. Issue #10 accepted `IMPLEMENT_BOUNDED_GRAPH_ADMISSION` against `main@6501024a19dd9feae415a7197a65c70ff214c40a`. Issue #11 is the implementation contract.
+
+**Observed evidence:** `run_query` appends `signal="expanded"` rows after RRF. Those rows do not carry the seed or the edge. `list_neighbors` exposes source and target ids, paths, and an optional free-text `relationship_type`. Citation class becomes `not_citable` for superseded, quarantined, and retracted sources. The engine has no normalized freshness field. `updated_at` is indexing time.
+
+**Inference:** The supported change is a typed sidecar over that existing output. A direct authored edge from one of the first three base rows (`lexical`, `semantic`, or `fused`, depth 0) is the provenance gate. Semantic association is not an edge. Unknown freshness stays `UNKNOWN`.
+
+**Alternatives:** Unconditional +1 admission also surfaces the extra rows measured in #9. Changing RRF, traversal, embeddings, or chunking was out of scope. Treating a missing superseded flag, a citable class, or an index timestamp as current would invent a fact the index does not store.
+
+**Consequence:** Callers ask with CLI `--json --envelope --graph-admission`, single-database MCP `envelope=true` plus `graph_admission=true`, or shared MCP `graph_admission=true`. The shared opt-in runs the existing depth-1 expansion because that tool has no expand flag. The default shared call does not expand. The admission id is `ga1:<sha256>` over compact UTF-8 JSON with sorted keys and no timestamp. A chunk over 50 whitespace tokens is skipped, not truncated. Conduit's current decoder still needs its own adapter before it can read `graph_admissions`.
+
+**Residual uncertainty:** A row whose raw status is `stale`, `current`, unrecognized, or absent can still be admitted. The engine has no normalized stale class, so the projection reports `freshness="UNKNOWN"` and keeps the raw status. That is the #9 label blind spot, not a new suppression rule.
+
+**Reconsideration trigger:** A stored freshness or supersession relation that says more than `citation_class`, or a Conduit adapter that needs a different field.
+
+---
+
 ## 2026-09-10 — Semantic apparatus stripping stays in the portable engine
 
 **Status:** Accepted for the standalone engine candidate.

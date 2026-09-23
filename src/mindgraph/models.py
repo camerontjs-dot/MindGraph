@@ -111,3 +111,28 @@ class NeighborResult(BaseModel):
     relationship_type: str | None
     source_path: str | None
     target_path: str | None
+
+
+class GraphAdmission(BaseModel):
+    """One opt-in graph-derived nomination.
+
+    `result` is the expanded `QueryResult` already produced by retrieval.
+    Nothing here assigns that row a fused rank. `freshness` stays UNKNOWN
+    until a later decision stores a real freshness fact.
+    """
+
+    kind: Literal["graph_derived"] = "graph_derived"
+    admission_id: str
+    result: QueryResult
+    seed_doc_id: str
+    seed_content_hash: str
+    seed_position: int = Field(ge=1, le=3)
+    edge_source_id: str
+    edge_target_id: str
+    edge_source_path: str
+    edge_target_path: str
+    relationship_type: str | None = None
+    freshness: Literal["UNKNOWN"] = "UNKNOWN"
+    raw_status: str | None = None
+    chunk_token_count: int = Field(ge=0)
+    token_limit: int = Field(ge=1)

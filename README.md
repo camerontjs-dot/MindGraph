@@ -114,6 +114,7 @@ mindgraph ingest-many path/to/manifest.json --db mindgraph.sqlite
 mindgraph query "what does this vault say about X" --db mindgraph.sqlite
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json --envelope
+mindgraph query "..." --db mindgraph.sqlite --expand --json --envelope --graph-admission
 mindgraph query "..." --db mindgraph.sqlite --expand
 mindgraph query "..." --db mindgraph.sqlite --expand --depth 2 --expand-top-k 10
 mindgraph query "..." --db mindgraph.sqlite --associate --associate-top-k 10
@@ -361,6 +362,9 @@ Every shared tool call must name one `scope`. There is no blended query: a call
 with no scope fails validation, and an unrecognized scope is rejected with the
 list of names you declared. Responses report the scope and trust profile they
 were served from, so a caller can always tell which store an answer came from.
+`graph_admission` defaults to false. When true, `results` is the existing
+depth-1 expanded output and the response adds `graph_admissions` (zero or one
+typed nomination). The default call does not expand and does not add that field.
 
 Pass `--index-id`, `--namespace`, and `--display-prefix` at ingest if you want
 provenance fields populated on result rows; without them those fields are null.
@@ -434,7 +438,7 @@ behavior under load, and RAM and latency figures are unmeasured.
 
 ### Tools
 
-`query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, `expand_top_k`, `associate`, `associate_top_k`, `associate_seed_k`, and `envelope`. By default, the MCP response content is a JSON array of `QueryResult` records. With `envelope=true` (or CLI `--json --envelope`), it returns an object containing `schema_version`, `intent_resolution`, `routing`, and `results`; legacy list output remains unchanged when the flag is omitted. `routing` is single-database metadata for the bound index (not multi-index federation). In a smoke run against the example vault, the default list path matched the CLI JSON output exactly:
+`query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, `expand_top_k`, `associate`, `associate_top_k`, `associate_seed_k`, `envelope`, and `graph_admission`. By default, the MCP response content is a JSON array of `QueryResult` records. With `envelope=true` (or CLI `--json --envelope`), it returns an object containing `schema_version`, `intent_resolution`, `routing`, and `results`; legacy list output remains unchanged when the flag is omitted. `graph_admission` defaults to false and requires `envelope=true`. When both are set, the envelope also includes `graph_admissions`: an empty list or one `GraphAdmission` over an already-produced depth-1 expanded row. The flag does not turn expansion on by itself. `routing` is single-database metadata for the bound index (not multi-index federation). In a smoke run against the example vault, the default list path matched the CLI JSON output exactly:
 
 ```json
 {
