@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 
 from mindgraph import daemon, db, embedders, idle_lifecycle, parser
+from mindgraph import graph_admission
 from mindgraph import query as query_mod
 from mindgraph.exceptions import EmbeddingError, IngestionError, MindgraphError
 from mindgraph import intent as intent_mod
@@ -869,6 +870,15 @@ def query(
         "--envelope",
         help="With --json, emit intent metadata plus results instead of the legacy result list.",
     ),
+    graph_admission_flag: bool = typer.Option(
+        False,
+        "--graph-admission",
+        help=(
+            "With --json --envelope, add graph_admissions: zero or one typed "
+            "nomination over the already-produced depth-1 expanded rows. "
+            "Does not change the legacy list or the default envelope."
+        ),
+    ),
     citable_only: bool = typer.Option(
         False,
         "--citable-only",
@@ -890,9 +900,17 @@ def query(
     Pass --expand for graph BFS matches; --associate for semantic doc neighbors.
     Pass --lexical-only for the dependency-light FTS5/graph profile.
     Pass --envelope with --json to include intent graph resolution metadata.
+    Pass --graph-admission with --json --envelope to add at most one typed
+    graph nomination. It does not run expansion by itself.
     Plain --json preserves the legacy result-list contract for existing callers.
     Text output still shows intent resolution by default. Use --no-intent to skip.
     """
+    if graph_admission_flag and not (as_json and envelope):
+        typer.echo(
+            "error: --graph-admission requires --json --envelope",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     _configure_logging(verbose)
     try:
         conn = db.get_db(db_path, read_only=True)
@@ -994,6 +1012,16 @@ def query(
                     },
                     **query_mod.citation_partition_payload(results),
                 }
+                if graph_admission_flag:
+                    out["graph_admissions"] = [
+                        item.model_dump()
+                        for item in graph_admission.project_graph_admissions(
+                            conn,
+                            results,
+                            query_text=formatted_question,
+                            k=final_top_k,
+                        )
+                    ]
             else:
                 emitted = results
                 if citable_only:
