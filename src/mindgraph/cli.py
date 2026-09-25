@@ -10,6 +10,7 @@ import typer
 
 from mindgraph import daemon, db, embedders, idle_lifecycle, parser
 from mindgraph import graph_admission
+from mindgraph import nominations as nominations_mod
 from mindgraph import query as query_mod
 from mindgraph.exceptions import EmbeddingError, IngestionError, MindgraphError
 from mindgraph import intent as intent_mod
@@ -879,6 +880,15 @@ def query(
             "Does not change the legacy list or the default envelope."
         ),
     ),
+    nominations_flag: bool = typer.Option(
+        False,
+        "--nominations",
+        help=(
+            "With --json --envelope, add nominations: one canonical compact "
+            "nomination per ranked row plus an explicit expansion handle. "
+            "Does not change ranking, the legacy list, or the default envelope."
+        ),
+    ),
     citable_only: bool = typer.Option(
         False,
         "--citable-only",
@@ -902,12 +912,21 @@ def query(
     Pass --envelope with --json to include intent graph resolution metadata.
     Pass --graph-admission with --json --envelope to add at most one typed
     graph nomination. It does not run expansion by itself.
+    Pass --nominations with --json --envelope to add one canonical compact
+    nomination per ranked row with an explicit expansion handle. It does not
+    change ranking and does not include full chunk text.
     Plain --json preserves the legacy result-list contract for existing callers.
     Text output still shows intent resolution by default. Use --no-intent to skip.
     """
     if graph_admission_flag and not (as_json and envelope):
         typer.echo(
             "error: --graph-admission requires --json --envelope",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if nominations_flag and not (as_json and envelope):
+        typer.echo(
+            "error: --nominations requires --json --envelope",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -1022,6 +1041,14 @@ def query(
                             k=final_top_k,
                         )
                     ]
+                if nominations_flag:
+                    out["nominations"] = [
+                        item.model_dump()
+                        for item in nominations_mod.project_nominations(
+                            results,
+                            query_text=formatted_question,
+                        )
+                    ]
             else:
                 emitted = results
                 if citable_only:
@@ -1104,6 +1131,54 @@ def neighbors(
 
     for idx, neighbor in enumerate(results, start=1):
         typer.echo(_format_neighbor_block(idx, neighbor))
+
+
+@app.command("expand-nomination")
+def expand_nomination(
+    expansion_handle: str = typer.Argument(..., help="Expansion handle from a nomination."),
+    db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of text."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Expand one nomination handle into exact source-backed chunk text.
+
+    Fail-closed: a malformed, missing, stale, or scope-mismatched handle
+    exits non-zero with an explicit error and returns no source text.
+    Expansion adds context, not authority.
+    """
+    _configure_logging(verbose)
+    try:
+        conn = db.get_db(db_path, read_only=True)
+        db.validate_query_schema(conn, db_path)
+    except MindgraphError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    try:
+        try:
+            expanded = nominations_mod.resolve_expansion(conn, expansion_handle)
+        except MindgraphError as e:
+            logger.error(str(e))
+            raise typer.Exit(code=1)
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if as_json:
+        typer.echo(json.dumps(expanded.model_dump(), indent=2, default=str))
+        return
+
+    typer.echo(f"title: {expanded.title}")
+    typer.echo(f"path: {expanded.path}")
+    typer.echo(f"doc_id: {expanded.doc_id} chunk {expanded.chunk_index}")
+    typer.echo(f"citation: {expanded.citation_class}")
+    typer.echo(f"freshness: {expanded.freshness}")
+    typer.echo("(expansion adds context, not authority)")
+    typer.echo("--- chunk ---")
+    typer.echo(expanded.chunk_text)
 
 
 @app.command("serve-mcp")

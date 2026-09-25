@@ -4,6 +4,60 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-09-25 — Stage 1A canonical nomination envelope + expansion handles
+
+**Status:** Accepted for this workbench slice. Not promoted. Implements issue #21.
+
+**Decision:** Add one canonical `Nomination` projection over already-ranked
+ordinary rows plus transparent `exp1:<base64url>` expansion handles resolved
+by `resolve_expansion`. Legacy `run_query`, the default CLI list, the default
+CLI/single-database MCP envelopes, and the default shared
+`{scope, trust_profile, results}` response stay unchanged.
+
+**Context:** `docs/VNEXT_RETRIEVAL_PLAN.md` (Stage 1) leaves the broader
+ordinary-result nomination contract open; promoted `GraphAdmission` is only a
+graph-derived sidecar. `QueryResult` already carries doc/chunk identity,
+citation class, trust profile, signal, ranks, distance, weak-fit, and
+expansion depths, but the full `chunk_text` rides on every row and there is no
+stable per-row identity or explicit second-stage expansion. The engine has no
+normalized freshness field; `updated_at` is indexing time.
+
+**Inference:** The supported change is a pure additive projection: one
+nomination per ranked row in input order, a deterministic 280-char exact
+preview (matching the human CLI excerpt, not a generated summary), preserved
+multi-signal `retrieval_reasons`, full ranking diagnostics, `UNKNOWN`
+freshness with raw status, and a self-describing handle bound to
+scope/doc/chunk/hash. Expansion reads the stored chunk and fails closed on
+malformed, missing, stale (hash mismatch returns no text), or scope-mismatched
+handles. Unknowns stay null; `source_root` is never serialized.
+
+**Alternatives:** Opaque hash-only handles cannot resolve without re-running
+the query, so the handle carries its coordinates transparently with JSON +
+base64url. Including ranks/scores in the nomination identity would make
+identity brittle to diagnostics, so identity binds query + scope + source +
+signal only. Returning full chunk text inside nominations would defeat the
+context-efficiency purpose. Changing RRF, traversal, embeddings, chunking,
+reranking, or the index format was out of scope.
+
+**Consequence:** Callers ask with CLI `--json --envelope --nominations`,
+single-database MCP `envelope=true` plus `nominations=true`, or shared MCP
+`nominations=true`, and expand with CLI `expand-nomination <handle>` or MCP
+`expand_nomination`. Nomination ids are `nom1:<sha256>` over compact UTF-8
+JSON with sorted keys and no timestamp. Conduit still owns context
+compilation; this slice adds no Conduit adapter and no RC6 writer provenance.
+
+**Residual uncertainty:** A row whose raw status is `stale`, `current`,
+unrecognized, or absent still projects as `freshness="UNKNOWN"`. A handle
+carrying a null hash resolves when the doc/chunk exists but reports
+`content_hash_match=null`. Preview truncation is character-based (280) with a
+whitespace token count alongside, not a tokenizer guarantee.
+
+**Reconsideration trigger:** A stored freshness fact stronger than
+`citation_class`, a Conduit adapter needing a different field, or frozen
+qualification showing compact nominations lose required context.
+
+---
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.

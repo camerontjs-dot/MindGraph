@@ -19,6 +19,7 @@ from starlette.requests import Request
 
 from mindgraph import db
 from mindgraph import graph_admission as graph_admission_mod
+from mindgraph import nominations as nominations_mod
 from mindgraph import query as query_mod
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph import intent as intent_mod
@@ -151,8 +152,11 @@ def create_server(
             "(not multi-index federation). "
             "With envelope=true and graph_admission=true, that envelope also "
             "includes graph_admissions (zero or one GraphAdmission). "
-            "graph_admission requires envelope=true. The default array and "
-            "the default envelope omit the field."
+            "With envelope=true and nominations=true, that envelope also "
+            "includes nominations (one canonical Nomination per ranked row "
+            "with an explicit expansion handle; no full chunk text). "
+            "graph_admission and nominations each require envelope=true. "
+            "The default array and the default envelope omit the fields."
         ),
     )
     def query_tool(
@@ -168,9 +172,12 @@ def create_server(
         associate_seed_k: int = query_mod.DEFAULT_ASSOCIATE_SEED_K,
         envelope: bool = False,
         graph_admission: bool = False,
+        nominations: bool = False,
     ) -> CallToolResult:
         if graph_admission and not envelope:
             return _tool_error("graph_admission requires envelope=true")
+        if nominations and not envelope:
+            return _tool_error("nominations requires envelope=true")
         formatted_question = question
         if embedder_spec is not None:
             formatted_question = format_query_text(
@@ -218,6 +225,14 @@ def create_server(
                             k=final_top_k,
                         )
                     ]
+                if nominations:
+                    payload["nominations"] = [
+                        item.model_dump()
+                        for item in nominations_mod.project_nominations(
+                            results,
+                            query_text=formatted_question,
+                        )
+                    ]
                 return _json_result(payload)
             return _json_result([result.model_dump() for result in results])
         except sqlite3.OperationalError as e:
@@ -249,6 +264,29 @@ def create_server(
             return _tool_error(str(e))
         except Exception:
             logger.exception("unexpected MCP graph_neighbors tool failure")
+            raise
+
+    @server.tool(
+        name="expand_nomination",
+        description=(
+            "Expand one nomination expansion_handle into exact source-backed "
+            "chunk text. Fail-closed: a malformed, missing, stale, or "
+            "scope-mismatched handle returns an error, never a different "
+            "source. Expansion adds context, not authority."
+        ),
+    )
+    def expand_nomination_tool(expansion_handle: str) -> CallToolResult:
+        try:
+            expanded = _run_with_lock_retry(
+                lambda: nominations_mod.resolve_expansion(conn, expansion_handle)
+            )
+            return _json_result(expanded.model_dump())
+        except sqlite3.OperationalError as e:
+            return _tool_error(f"Database error: {e}")
+        except MindgraphError as e:
+            return _tool_error(str(e))
+        except Exception:
+            logger.exception("unexpected MCP expand_nomination tool failure")
             raise
 
     return server
@@ -297,6 +335,7 @@ def create_shared_server(
         scope: str,
         final_top_k: int = query_mod.DEFAULT_FINAL_TOP_K,
         graph_admission: bool = False,
+        nominations: bool = False,
     ) -> CallToolResult:
         try:
             activity = lifecycle.request() if lifecycle else _null_context()
@@ -346,6 +385,15 @@ def create_shared_server(
                             scope_index=scope,
                         )
                     ]
+                if nominations:
+                    payload["nominations"] = [
+                        item.model_dump()
+                        for item in nominations_mod.project_nominations(
+                            rows,
+                            query_text=formatted,
+                            scope_index=scope,
+                        )
+                    ]
                 return _json_result(payload)
         except sqlite3.OperationalError as exc:
             return _tool_error(f"Database error: {exc}")
@@ -364,6 +412,26 @@ def create_shared_server(
                 rows = _run_with_lock_retry(lookup)
                 return _json_result({"scope": scope, "trust_profile": trust_profile,
                                      "results": [row.model_dump() for row in rows]})
+        except sqlite3.OperationalError as exc:
+            return _tool_error(f"Database error: {exc}")
+        except MindgraphError as exc:
+            return _tool_error(str(exc))
+
+    @server.tool(name="expand_nomination")
+    def scoped_expand_nomination(expansion_handle: str, scope: str) -> CallToolResult:
+        try:
+            activity = lifecycle.request() if lifecycle else _null_context()
+            with activity:
+                conn, trust_profile = selected(scope)
+                expanded = _run_with_lock_retry(
+                    lambda: nominations_mod.resolve_expansion(
+                        conn, expansion_handle, scope_index=scope
+                    )
+                )
+                payload = expanded.model_dump()
+                payload["scope"] = scope
+                payload["trust_profile"] = trust_profile
+                return _json_result(payload)
         except sqlite3.OperationalError as exc:
             return _tool_error(f"Database error: {exc}")
         except MindgraphError as exc:
