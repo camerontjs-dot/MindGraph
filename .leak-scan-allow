@@ -1,0 +1,3 @@
+# Scoped exceptions for the repository's leak scanner.
+# Format: path | exact substring | reason
+src/mindgraph/models.py | /home/me/notes | fictional path example in QueryResult documentation; not a real machine path

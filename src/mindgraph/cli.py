@@ -884,9 +884,9 @@ def query(
         False,
         "--nominations",
         help=(
-            "With --json --envelope, add nominations: one canonical compact "
-            "nomination per ranked row plus an explicit expansion handle. "
-            "Does not change ranking, the legacy list, or the default envelope."
+            "With --json --envelope, return compact nominations instead of "
+            "text-bearing result arrays. Does not change ranking, the legacy "
+            "list, or the default envelope."
         ),
     ),
     citable_only: bool = typer.Option(
@@ -912,9 +912,10 @@ def query(
     Pass --envelope with --json to include intent graph resolution metadata.
     Pass --graph-admission with --json --envelope to add at most one typed
     graph nomination. It does not run expansion by itself.
-    Pass --nominations with --json --envelope to add one canonical compact
-    nomination per ranked row with an explicit expansion handle. It does not
-    change ranking and does not include full chunk text.
+    Pass --nominations with --json --envelope to return one canonical compact
+    nomination per ranked row with an explicit expansion handle. This mode
+    omits the text-bearing results and not_citable arrays; the default envelope
+    and legacy list remain unchanged.
     Plain --json preserves the legacy result-list contract for existing callers.
     Text output still shows intent resolution by default. Use --no-intent to skip.
     """
@@ -1049,6 +1050,10 @@ def query(
                             query_text=formatted_question,
                         )
                     ]
+                    # Compact mode is useful only if this response does not
+                    # also serialize the legacy full-chunk result arrays.
+                    out.pop("results", None)
+                    out.pop("not_citable", None)
             else:
                 emitted = results
                 if citable_only:

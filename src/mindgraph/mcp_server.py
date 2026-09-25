@@ -152,9 +152,9 @@ def create_server(
             "(not multi-index federation). "
             "With envelope=true and graph_admission=true, that envelope also "
             "includes graph_admissions (zero or one GraphAdmission). "
-            "With envelope=true and nominations=true, that envelope also "
-            "includes nominations (one canonical Nomination per ranked row "
-            "with an explicit expansion handle; no full chunk text). "
+            "With envelope=true and nominations=true, the response uses "
+            "compact mode: it includes one canonical Nomination per ranked "
+            "row and omits the text-bearing results/not_citable arrays. "
             "graph_admission and nominations each require envelope=true. "
             "The default array and the default envelope omit the fields."
         ),
@@ -233,6 +233,8 @@ def create_server(
                             query_text=formatted_question,
                         )
                     ]
+                    payload.pop("results", None)
+                    payload.pop("not_citable", None)
                 return _json_result(payload)
             return _json_result([result.model_dump() for result in results])
         except sqlite3.OperationalError as e:
@@ -315,7 +317,10 @@ def create_shared_server(
         raise MCPServerStartupError("MCP path must start with '/'")
     server = FastMCP(
         "mindgraph-shared",
-        instructions="Select one lifecycle scope. Results are nominations, not verified claims.",
+        instructions=(
+            "Select one lifecycle scope. Results are nominations, not verified "
+            "claims. With nominations=true, the response omits full result rows."
+        ),
         host=host,
         port=port,
         streamable_http_path=path,
@@ -394,6 +399,7 @@ def create_shared_server(
                             scope_index=scope,
                         )
                     ]
+                    payload.pop("results", None)
                 return _json_result(payload)
         except sqlite3.OperationalError as exc:
             return _tool_error(f"Database error: {exc}")
