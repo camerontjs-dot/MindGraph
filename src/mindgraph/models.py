@@ -136,3 +136,92 @@ class GraphAdmission(BaseModel):
     raw_status: str | None = None
     chunk_token_count: int = Field(ge=0)
     token_limit: int = Field(ge=1)
+
+
+class Nomination(BaseModel):
+    """One canonical nomination for an ordinary retrieval result.
+
+    Stage 1A (issue #21): a stable structured projection of an existing
+    lexical / semantic / fused (or appended expanded / associated) row
+    without changing its ranking or meaning.
+
+    The nomination carries enough information for a human or agent to decide
+    whether to expand it, without receiving the full source chunk up front.
+    `preview` is a deterministic exact extract (not a generated summary).
+    `freshness` stays UNKNOWN until a later decision stores a real
+    freshness fact. A nomination is not verification; expansion adds
+    context, not authority.
+    """
+
+    kind: Literal["source_section"] = "source_section"
+    nomination_id: str
+    expansion_handle: str
+    title: str
+    preview: str
+    preview_truncated: bool = False
+    preview_chars: int = Field(ge=0)
+    chunk_token_count: int = Field(ge=0)
+    doc_id: str
+    path: str
+    source_path: str | None = None
+    display_path: str | None = None
+    content_hash: str | None = None
+    chunk_index: int = Field(ge=0)
+    citation_class: CitationClass = "citable"
+    provenance_warning: str | None = None
+    trust_profile: str | None = None
+    index_id: str | None = None
+    namespace: str | None = None
+    doc_type: str | None = None
+    domain: str | None = None
+    freshness: Literal["UNKNOWN"] = "UNKNOWN"
+    raw_status: str | None = None
+    signal: Signal
+    retrieval_reasons: list[str] = Field(default_factory=list)
+    lexical_rank: int | None = None
+    semantic_rank: int | None = None
+    rrf_score: float = 0.0
+    semantic_distance: float | None = None
+    weak_fit: bool = False
+    expansion_depth: int = 0
+    association_depth: int = 0
+    query_scope_warning: QueryScopeWarning | None = None
+    scope_index: str | None = None
+    representation_level: Literal["chunk"] = "chunk"
+    authority_note: Literal["nomination_only"] = "nomination_only"
+
+
+class NominationExpansion(BaseModel):
+    """Source-backed material for one expansion handle.
+
+    Returned only by an explicit expansion request against the same
+    identified index state. `content_hash_match` is True when the handle
+    hash equals the stored hash, False is never returned with text (a
+    mismatch fails closed instead), and None when the handle carried no
+    hash. Expansion increases context, not epistemic authority.
+    """
+
+    kind: Literal["source_section_expansion"] = "source_section_expansion"
+    expansion_handle: str
+    doc_id: str
+    path: str
+    title: str
+    chunk_index: int = Field(ge=0)
+    chunk_text: str
+    content_hash: str | None = None
+    content_hash_match: bool | None = None
+    freshness: Literal["UNKNOWN"] = "UNKNOWN"
+    raw_status: str | None = None
+    citation_class: CitationClass = "citable"
+    provenance_warning: str | None = None
+    trust_profile: str | None = None
+    index_id: str | None = None
+    namespace: str | None = None
+    doc_type: str | None = None
+    domain: str | None = None
+    source_path: str | None = None
+    display_path: str | None = None
+    scope_index: str | None = None
+    authority_note: Literal["expansion_adds_context_not_authority"] = (
+        "expansion_adds_context_not_authority"
+    )
