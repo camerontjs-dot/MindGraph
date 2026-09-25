@@ -350,12 +350,11 @@ def test_cli_legacy_list_unchanged_and_envelope_opt_in(tmp_path, monkeypatch):
     )
     assert with_nom.exit_code == 0, with_nom.output
     payload = jsonlib.loads(with_nom.output)
-    assert [r["doc_id"] for r in payload["results"]] == [
-        r["doc_id"] for r in legacy_rows
-    ]
-    assert len(payload["nominations"]) == len(payload["results"]) + len(
-        payload.get("not_citable", [])
-    )
+    assert "results" not in payload
+    assert "not_citable" not in payload
+    assert len(payload["nominations"]) == len(legacy_rows)
+    assert all("chunk_text" not in item for item in payload["nominations"])
+    assert '"chunk_text"' not in jsonlib.dumps(payload)
     assert payload["nominations"][0]["expansion_handle"].startswith("exp1:")
     assert payload["nominations"][0]["nomination_id"].startswith("nom1:")
 
@@ -409,7 +408,8 @@ async def test_mcp_defaults_omit_nominations_and_opt_in_adds(tmp_path, monkeypat
                  "envelope": True},
             )
             assert default_env.isError is False
-            assert "nominations" not in jsonlib.loads(default_env.content[0].text)
+            default_env_payload = jsonlib.loads(default_env.content[0].text)
+            assert "nominations" not in default_env_payload
 
             gated = await session.call_tool(
                 "query",
@@ -425,9 +425,13 @@ async def test_mcp_defaults_omit_nominations_and_opt_in_adds(tmp_path, monkeypat
             )
             assert with_nom.isError is False
             payload = jsonlib.loads(with_nom.content[0].text)
-            assert len(payload["nominations"]) == len(payload["results"]) + len(
-                payload.get("not_citable", [])
+            assert "results" not in payload
+            assert "not_citable" not in payload
+            assert len(payload["nominations"]) == len(default_env_payload["results"]) + len(
+                default_env_payload.get("not_citable", [])
             )
+            assert all("chunk_text" not in item for item in payload["nominations"])
+            assert '"chunk_text"' not in jsonlib.dumps(payload)
 
             handle = payload["nominations"][0]["expansion_handle"]
             expanded = await session.call_tool(
@@ -437,6 +441,17 @@ async def test_mcp_defaults_omit_nominations_and_opt_in_adds(tmp_path, monkeypat
             body = jsonlib.loads(expanded.content[0].text)
             assert body["chunk_text"]
             assert body["freshness"] == "UNKNOWN"
+
+            stale_handle = encode_expansion_handle(
+                scope_index=None,
+                doc_id=body["doc_id"],
+                chunk_index=body["chunk_index"],
+                content_hash="0" * 64,
+            )
+            stale = await session.call_tool(
+                "expand_nomination", {"expansion_handle": stale_handle}
+            )
+            assert stale.isError is True
 
             stale = await session.call_tool(
                 "expand_nomination", {"expansion_handle": "exp1:bm90LWpzb24="}
@@ -452,7 +467,10 @@ async def test_shared_mcp_nominations_and_scoped_expansion(tmp_path, monkeypatch
     conn = mcp_server.open_database(db_path)
     try:
         server = mcp_server.create_shared_server(
-            {"knowledge": (conn, "durable_knowledge")},
+            {
+                "knowledge": (conn, "durable_knowledge"),
+                "projects": (conn, "project_status"),
+            },
             KeywordEmbedder({"alpha": 0}),
         )
         async with create_connected_server_and_client_session(server) as session:
@@ -460,7 +478,9 @@ async def test_shared_mcp_nominations_and_scoped_expansion(tmp_path, monkeypatch
                 "query", {"question": "alpha", "scope": "knowledge"}
             )
             assert default.isError is False
-            assert "nominations" not in jsonlib.loads(default.content[0].text)
+            default_payload = jsonlib.loads(default.content[0].text)
+            assert "nominations" not in default_payload
+            assert "results" in default_payload
 
             with_nom = await session.call_tool(
                 "query",
@@ -469,7 +489,10 @@ async def test_shared_mcp_nominations_and_scoped_expansion(tmp_path, monkeypatch
             assert with_nom.isError is False
             payload = jsonlib.loads(with_nom.content[0].text)
             assert payload["scope"] == "knowledge"
-            assert len(payload["nominations"]) == len(payload["results"])
+            assert "results" not in payload
+            assert len(payload["nominations"]) == len(default_payload["results"])
+            assert all("chunk_text" not in item for item in payload["nominations"])
+            assert '"chunk_text"' not in jsonlib.dumps(payload)
 
             handle = payload["nominations"][0]["expansion_handle"]
             expanded = await session.call_tool(

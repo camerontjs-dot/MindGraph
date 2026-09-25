@@ -4,6 +4,49 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-09-25 — Make Stage 1A opt-in responses compact at the transport boundary
+
+**Status:** Proposed in the bounded successor to PR #22.
+
+**Decision:** When `nominations=true` is requested, return the canonical
+nomination list without the text-bearing `results` and `not_citable` arrays.
+Apply the same rule to CLI `--nominations`, single-database MCP
+`envelope=true, nominations=true`, and shared MCP `nominations=true`. Calls
+without the opt-in keep their existing response shapes.
+
+**Observed evidence:** PR #22 adds nominations beside the legacy result rows.
+Those rows still serialize `chunk_text`, so a caller receiving the opt-in
+response receives both the compact projection and the full chunks. That does
+not deliver the qualified selection boundary at the public response surface.
+
+**Inference:** Removing only those two arrays from the opt-in response makes
+the already-qualified projection usable without changing its fields, order,
+identity, 280-character exact preview, expansion handles, or expansion
+resolution. The preview remains source text by design; this change removes
+full chunk bodies, not every source-derived character.
+
+**Alternatives:** Keeping both arrays leaves the compact consumer boundary to
+each caller and exposes full chunks before that choice. Removing the exact
+preview would change the independently qualified selector surface and is not
+part of this successor.
+
+**Consequence:** Ranking, retrieval, graph behavior, and no-opt-in CLI/MCP
+responses remain unchanged. An opt-in nomination response omits `results` and
+`not_citable`; explicit expansion remains the only way to receive a full
+`chunk_text` through this path. PR #22 and its qualification evidence remain
+unchanged; this successor preserves the qualified projection and verifies the
+response boundary separately.
+
+**Residual uncertainty:** The qualified context counts include exact previews
+and use RC1 whitespace tokenization. They do not represent tokenizer-accurate
+costs or establish behavior outside the tested selector/aperture.
+
+**Reconsideration trigger:** A consumer contract that requires both full rows
+and compact nominations in the same response, or a later qualified projection
+that changes the preview.
+
+---
+
 ## 2026-09-25 — Stage 1A canonical nomination envelope + expansion handles
 
 **Status:** Accepted for this workbench slice. Not promoted. Implements issue #21.
