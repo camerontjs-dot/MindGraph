@@ -144,6 +144,32 @@ The agent-facing surface should preserve:
 
 Do not require an agent to parse human prose or reconstruct provenance from a display string.
 
+## Projection invariant: one retrieval, separate human and agent apertures
+
+MindGraph should produce one canonical retrieval event and expose different projections of that same event for different consumers.
+
+**Agent projection:** default to the minimum sufficient nomination surface that still lets an agent decide whether expansion is worth the context cost. The normal agent-facing response should not contain full source chunks. It should preserve the fields needed for selection and safe expansion: stable nomination identity, concise title, exact source identity, typed authority/provenance, freshness when evidenced, retrieval reason, compact exact preview, and expansion handle. Low-level scores and diagnostics remain available for debugging/evaluation but are not part of the default agent aperture unless evidence shows they improve selection.
+
+Do not minimize the aperture by intuition alone. The current Stage 1A surface, including the exact preview budget already qualified in PR #22, is the baseline. Any further reduction in preview length or fields is a new selector surface and should be evaluated for mandatory-context loss before promotion.
+
+**Human projection:** Conduit and direct human use may present a richer inspection surface over the same nominations, including the complete retrieved chunk, surrounding section, graph neighborhood, retrieval diagnostics, and navigation to the source. Rich human visibility is an inspection affordance, not context admission.
+
+Product invariant:
+
+> **Human visibility must not imply agent-context admission.**
+
+A human may inspect every retrieved candidate without those chunks entering an agent's working context. Agent context admission remains an explicit downstream decision by the operator, worker, or Context Compiler under its own authority.
+
+The human surface should populate detail by resolving the **same expansion handles** produced by the original retrieval. It should not silently rerun retrieval merely to render a richer view, because that can create two different retrieval moments under one displayed query. A failed or stale expansion must remain a visible failure rather than being replaced by a nearby source.
+
+This yields three distinct objects that must remain distinguishable:
+
+1. the MindGraph retrieval/nomination set;
+2. the human inspection surface over that set;
+3. the subset actually admitted to an agent context manifest.
+
+Conduit may eagerly resolve nominations for operator inspection if useful, but that eager inspection must not alter the agent projection or automatically attach the expanded text to a worker.
+
 ## Progressive retrieval
 
 Add an explicit two-stage operating model:
