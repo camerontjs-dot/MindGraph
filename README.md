@@ -43,6 +43,15 @@ Each result carries a `signal` label (`lexical`, `semantic`, `fused`, `expanded`
 
 Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. The local `source_root` is retained for internal provenance but is omitted from serialized CLI/MCP results so host-specific absolute paths do not cross the boundary. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
 
+### Database identity
+
+Consumers that require database-wide index authority, including on a no-hit
+query, can use the opt-in [producer-bound identity v1 contract](docs/index-identity-v1.md).
+The producer binds a validated corpus explicitly; the query reads that stored
+binding and its document-map hash in the retrieval snapshot. Legacy arrays and
+intent envelopes keep their existing shapes. Database identity remains nomination
+authority, not source verification.
+
 ### Tuning the scope warnings
 
 `query_scope_warning` fires on a keyword heuristic, and the shipped defaults

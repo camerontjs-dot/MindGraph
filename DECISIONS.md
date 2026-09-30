@@ -4,6 +4,39 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-09-30 — Producer-bound database identity for empty nominations
+
+**Status:** Successor design; independent cross-repository qualification pending.
+
+**Observed defect:** Conduit #110 accepted a zero-row query against a projects
+database and an unidentified empty index. Document provenance cannot establish
+the identity of the selected database when no document is returned.
+
+**Decision:** Add the opt-in `mindgraph-index-identity/v1` stored binding and
+`mindgraph-query-identity/v1` query envelope. The corpus producer supplies the
+index, trust, lifecycle, manifest and validated source-map authority. MindGraph
+binds that declaration to the stored document map and reads it from the same
+SQLite snapshot as retrieval. It never invents identity from a scope or filename.
+The consumer compares explicit identity and retains its returned-row checks.
+
+**Ownership and compatibility:** MainFrame selects, validates, stages and
+promotes its corpus. MindGraph stores and transports the generic binding.
+Conduit consumes nominations. Legacy CLI arrays, intent envelopes and the
+default knowledge/projects daemon remain compatible. An explicitly configured
+scope can require a stored identity at startup and on each request.
+
+**Alternatives:** Rejecting every empty query loses legitimate no-hit results.
+Caller labels and filenames leave the defect intact. An external receipt alone
+does not bind the database used by the query. A stored binding plus a validated
+document-map hash carries the authority across database copies and rejects a
+stale binding after document changes.
+
+**Limits:** This is local producer authority, not a signature against a malicious
+database writer, source verification, freshness proof or retrieval-quality claim.
+Reconsider if that threat model is required. Rebuild and stage legacy databases;
+do not infer or silently backfill identity on query. See
+[`docs/index-identity-v1.md`](docs/index-identity-v1.md).
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.

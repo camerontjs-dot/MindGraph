@@ -8,7 +8,8 @@ import logging
 import os
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from threading import RLock
 from pathlib import Path
 from typing import Literal
 
@@ -17,7 +18,7 @@ from mcp.types import CallToolResult, TextContent
 from starlette.responses import JSONResponse
 from starlette.requests import Request
 
-from mindgraph import db
+from mindgraph import db, index_identity
 from mindgraph import graph_admission as graph_admission_mod
 from mindgraph import query as query_mod
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
@@ -269,6 +270,7 @@ def create_shared_server(
     embedder_spec: EmbedderSpec | None = None,
     embed_template: EmbedTemplate = "none",
     lifecycle: IdleLifecycle | None = None,
+    required_identities: dict | None = None,
 ) -> FastMCP:
     """Create a loopback shared server with one explicit scope per call."""
     if host not in {"127.0.0.1", "localhost", "::1"}:
@@ -282,6 +284,8 @@ def create_shared_server(
         port=port,
         streamable_http_path=path,
     )
+    required_identities = required_identities or {}
+    connection_locks = {name: RLock() for name in scopes}
 
     def selected(scope: str) -> tuple[sqlite3.Connection, str]:
         try:
@@ -291,17 +295,29 @@ def create_shared_server(
                 f"unknown scope: {scope}; choose one of: {', '.join(sorted(scopes))}"
             ) from exc
 
+    @contextmanager
+    def selected_snapshot(scope, expose_identity=False):
+        conn, trust = selected(scope)
+        required = required_identities.get(scope)
+        with connection_locks[scope]:
+            with index_identity.read_snapshot(conn) if required or expose_identity else nullcontext():
+                identity = None
+                if required or expose_identity:
+                    expected = required or {"retrieval_scope": scope, "trust_profile": trust}
+                    identity = index_identity.read_identity(conn, expected=expected)
+                yield conn, trust, identity
+
     @server.tool(name="query")
     def scoped_query(
         question: str,
         scope: str,
         final_top_k: int = query_mod.DEFAULT_FINAL_TOP_K,
         graph_admission: bool = False,
+        identity_envelope: bool = False,
     ) -> CallToolResult:
         try:
             activity = lifecycle.request() if lifecycle else _null_context()
-            with activity:
-                conn, trust_profile = selected(scope)
+            with activity, selected_snapshot(scope, identity_envelope) as (conn, trust_profile, identity):
                 if db.get_semantic_enabled(conn) is False:
                     return _tool_error(
                         "This database is lexical-only; re-ingest it without "
@@ -335,6 +351,8 @@ def create_shared_server(
                     "trust_profile": trust_profile,
                     "results": [row.model_dump() for row in rows],
                 }
+                if identity is not None:
+                    payload.update(index_identity.query_envelope(identity, rows))
                 if graph_admission:
                     payload["graph_admissions"] = [
                         item.model_dump()
@@ -356,8 +374,7 @@ def create_shared_server(
     def scoped_neighbors(doc_id: str, scope: str) -> CallToolResult:
         try:
             activity = lifecycle.request() if lifecycle else _null_context()
-            with activity:
-                conn, trust_profile = selected(scope)
+            with activity, selected_snapshot(scope) as (conn, trust_profile, _identity):
                 def lookup():
                     _ensure_document_exists(conn, doc_id)
                     return query_mod.list_neighbors(conn, doc_id)
