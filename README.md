@@ -438,6 +438,10 @@ behavior under load, and RAM and latency figures are unmeasured.
 
 ### Tools
 
+For opt-in compact nominations and explicit `expand_nomination`, see
+[Stage 1 nominations](docs/STAGE1_NOMINATIONS.md). Legacy responses remain
+unchanged without the nomination flag.
+
 `query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, `expand_top_k`, `associate`, `associate_top_k`, `associate_seed_k`, `envelope`, and `graph_admission`. By default, the MCP response content is a JSON array of `QueryResult` records. With `envelope=true` (or CLI `--json --envelope`), it returns an object containing `schema_version`, `intent_resolution`, `routing`, and `results`; legacy list output remains unchanged when the flag is omitted. `graph_admission` defaults to false and requires `envelope=true`. When both are set, the envelope also includes `graph_admissions`: an empty list or one `GraphAdmission` over an already-produced depth-1 expanded row. The flag does not turn expansion on by itself. `routing` is single-database metadata for the bound index (not multi-index federation). In a smoke run against the example vault, the default list path matched the CLI JSON output exactly:
 
 ```json

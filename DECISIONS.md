@@ -4,6 +4,43 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-09-30 — Maintained Stage 1 nominations and index-bound expansion
+
+**Status:** Accepted for this isolated candidate; pending promotion review.
+
+**Decision:** Project existing ranked results to canonical `nom1` nominations
+only when requested. Compact transport replaces full result arrays with exact
+previews and explicit `exp2` locators. Expansion validates independently stored
+index identity and source coordinates in one read snapshot before returning
+the stored chunk. Caller scope aliases remain separate from stored index ids.
+Shared expansion retains document `trust_profile`; the registration label is
+reported separately as `scope_trust_profile`.
+
+**Evidence boundary:** [PR #22](https://github.com/camerontjs-dot/MindGraph/pull/22)
+qualified nomination projection. Preserve
+[PR #23](https://github.com/camerontjs-dot/MindGraph/pull/23) as the failed
+cross-index predecessor. [Issue #31](https://github.com/camerontjs-dot/MindGraph/issues/31)
+qualified standalone exp2 on `0d60e88f6ac2a5ca26fa870774181c21a7afd65a`.
+Extract only its engine surface and regression tests onto current `main`;
+exclude its repair tooling and experiment documentation. PR #37 and the
+inconclusive #38 oracle remain preserved. This candidate requires fresh tests.
+
+**Consequences:** Legacy responses and retrieval are unchanged. Missing,
+ambiguous, contradictory, mismatched or stale bindings fail without text.
+Legacy exp1 requires requery. Freshness remains `UNKNOWN`, raw source status
+and citation authority survive, and unknown hashes stay null.
+
+**Non-claims:** No authentication, raw-file custody, retrieval-quality gain,
+Conduit integration, or selector/expansion-budget policy. #33 was inconclusive;
+#34/#35 remain blocked. No merge, installed promotion or release.
+
+**Alternatives:** Merging preserved experimental branches would carry repair
+apparatus into the maintained engine. Deriving index identity from a scope
+alias, trust label or filename would repeat the #23 failure. Automatic
+expansion would decide a policy unsupported by completed evidence.
+
+---
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.
