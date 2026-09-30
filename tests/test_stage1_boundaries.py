@@ -6,7 +6,7 @@ Set MINDGRAPH_STAGE1_RECEIPT_DIR to retain raw behavioral receipts externally.
 from __future__ import annotations
 
 import base64
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, closing, contextmanager
 from datetime import timedelta
 import hashlib
 import json
@@ -115,13 +115,14 @@ def fixture_indexes(tmp_path, source_vector):
     for name, sql in mutations.items():
         path = tmp_path / (name + ".sqlite")
         shutil.copyfile(left, path)
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn:
             conn.execute(sql)
+            conn.commit()
         indexes[name] = path
     for name in ("namespace", "path", "stale", "handle-index", "malformed", "exp1", "wrong-scope"):
         indexes[name] = left
     # Direct preflight of the collision rather than trusting its constructor.
-    with sqlite3.connect(indexes["collision-original"]) as conn:
+    with closing(sqlite3.connect(indexes["collision-original"])) as conn:
         row = conn.execute("SELECT index_id,content_hash FROM documents WHERE id='same-doc'").fetchone()
         assert row == ("mainframe-projects", DIGEST)
         assert conn.execute("SELECT text FROM chunks WHERE doc_id='same-doc' AND chunk_index=0").fetchone()[0] == TEXT
