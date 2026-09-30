@@ -1,0 +1,70 @@
+{
+  "advancement_readiness": "awaiting_independent_operations_authority_repair_qualification",
+  "blockers": [
+    "Independent exact-head cross-repository qualification remains required"
+  ],
+  "candidate_id": "mindgraph-operations-index-authority-20260930",
+  "dependencies": {},
+  "evidence": {
+    "component": {
+      "checks": {
+        "engine_suite": {
+          "failed": 0,
+          "passed": 383,
+          "skipped": 0,
+          "trace": "mindgraph-full-development"
+        }
+      },
+      "classification": "implementer_development",
+      "status": "completed_with_explicit_limitations"
+    },
+    "fresh_acceptance": {
+      "status": "not_run"
+    },
+    "independent_replay": {
+      "status": "not_run"
+    }
+  },
+  "excluded_scope": [
+    "Whole-workspace README prerequisite repair",
+    "Operator install/daemon/corpus promotion",
+    "Source verification or filesystem composition",
+    "Final Context Compiler/Supervisor composition",
+    "Retrieval quality/routing changes",
+    "Merge or release"
+  ],
+  "external_concurrent_inputs": [
+    "Historical #110 BLOCK and #43 remain unchanged",
+    "Maintained Context Compiler and concurrent qualification worktrees remain separately owned"
+  ],
+  "freeze_binding": "The commit adding this manifest; its exact full head/tree is recorded in the cross-repository GitHub handoff.",
+  "included_scope": [
+    "Generic producer declaration bound to complete stored document map",
+    "Opt-in CLI identity inspection/envelope and required shared-daemon scope identity",
+    "Single-snapshot identity and retrieval; legacy transport compatibility"
+  ],
+  "lifecycle_state": "frozen",
+  "non_claims": [
+    "Development evidence is not independent qualification",
+    "Live whole-workspace corpus readiness UNKNOWN",
+    "Operator-installed engine equivalence UNKNOWN",
+    "Local binding is not authentication against a malicious database writer",
+    "No source admission, expansion, delivery, merge or release authority"
+  ],
+  "predecessor": {
+    "head": "8df9ae7fccdb742558950ef9bdedb96cc74df6d0",
+    "kind": "maintained_main",
+    "repository": "camerontjs-dot/MindGraph",
+    "tree": "44111ff75c53a1862001b9d041944e81a2d1430a"
+  },
+  "product": "MindGraph",
+  "schema": "mindgraph-candidate/v1",
+  "source_commit": "3af092d575aa2315eb6dd5bffd47b5d60d5d0c24",
+  "source_tree": "e858ee6d604016355553f5a044b5486befe1d953",
+  "versions": {
+    "operations_index": "mainframe-operations",
+    "operations_trust": "operations_status",
+    "query_envelope": "mindgraph-query-identity/v1",
+    "stored_identity": "mindgraph-index-identity/v1"
+  }
+}
