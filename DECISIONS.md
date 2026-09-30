@@ -4,6 +4,123 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-09-30 — Stage 1 maintained nomination, compact transport, and index-bound exp2 expansion
+
+**Status:** Accepted for this workbench candidate. Implements issue #21 from current `main`. Not merged or released.
+
+**Decision:** Carry the already-supported Stage 1 surface onto a fresh branch from current GitHub `main`: one canonical `Nomination` per ordinary ranked row, compact opt-in transport, and explicit `exp2` source expansion bound to independently stored index identity. Do not merge, rebase, or repair PRs #22, #23, #29, or issue #31. Those remain historical evidence.
+
+**Observed evidence:** PR #22 independently reached `PASS_FOR_STAGE1A_NOMINATION_PROMOTION_REVIEW` for the nom1 projection, order, exact 280-character preview, provenance, UNKNOWN freshness, and deterministic identity. PR #23 preserved compact transport (omit `results` / `not_citable` / full `chunk_text` on opt-in) and is retained as `BLOCK_MINDGRAPH_PROGRESSIVE_RETRIEVAL_INTEGRATION` because an `exp1` handle could redeem a colliding document/chunk/hash from another index. Issue #31 independently qualified the assembled exp2 successor as `PASS_FOR_STANDALONE_INDEX_BOUND_EXPANSION`.
+
+**Inference:** The maintained production object is the union of those supported claims: nom1 identity and projection unchanged; compact opt-in transport; exp2 locators that separate a caller scope alias from stored `index_id`; fail-closed redemption on cross-index collision, missing/mixed/contradictory identity, wrong scope, path/namespace mismatch, missing document or chunk, and malformed or stale handles; no source text on failure; legacy no-opt-in CLI/MCP shapes unchanged; `exp1` requires requery rather than silent reinterpretation. GraphAdmission remains a separate opt-in sidecar and is not the ordinary-result contract.
+
+**Alternatives:** Merging the preserved research branches would rewrite their evidence identity. Reintroducing `exp1` redemption, deriving index identity from trust labels or filenames, duplicating full result rows beside nominations, or encoding a fixed/automatic expansion budget would either restore the #23 false accept or pretend a still-unknown policy (#35) is known.
+
+**Consequence:** Callers opt in with CLI `--json --envelope --nominations` (optional `--nomination-scope`), single-database MCP `envelope=true, nominations=true`, or shared MCP `nominations=true`. Expansion is CLI `expand-nomination` / MCP `expand_nomination`. Handles are `exp2:<base64url>` JSON locators, not credentials, freshness, or proof. Ranking, corpus, embeddings, graph admission/traversal, DB format, Conduit, and selector/model behavior stay unchanged.
+
+**Residual uncertainty:** Freshness remains UNKNOWN. Preview length is character-based with RC1 whitespace tokens. Handles do not authenticate a caller or prove writer-byte custody. This candidate does not establish ranking/recall gains, tokenizer-accurate costs, or an expansion-budget policy.
+
+**Reconsideration trigger:** A stored freshness fact stronger than `citation_class`; a later qualified projection that changes nom1 identity or the 280-character exact preview; or a separate issue that authorizes an expansion-budget policy.
+
+---
+
+## 2026-09-25 — Make Stage 1A opt-in responses compact at the transport boundary
+
+**Status:** Accepted on the 2026-09-30 maintained candidate. Historical PR #23 remains preserved blocked evidence and is not merged.
+
+**Decision:** When `nominations=true` is requested, return the canonical
+nomination list without the text-bearing `results` and `not_citable` arrays.
+Apply the same rule to CLI `--nominations`, single-database MCP
+`envelope=true, nominations=true`, and shared MCP `nominations=true`. Calls
+without the opt-in keep their existing response shapes.
+
+**Observed evidence:** PR #22 adds nominations beside the legacy result rows.
+Those rows still serialize `chunk_text`, so a caller receiving the opt-in
+response receives both the compact projection and the full chunks. That does
+not deliver the qualified selection boundary at the public response surface.
+
+**Inference:** Removing only those two arrays from the opt-in response makes
+the already-qualified projection usable without changing its fields, order,
+identity, 280-character exact preview, expansion handles, or expansion
+resolution. The preview remains source text by design; this change removes
+full chunk bodies, not every source-derived character.
+
+**Alternatives:** Keeping both arrays leaves the compact consumer boundary to
+each caller and exposes full chunks before that choice. Removing the exact
+preview would change the independently qualified selector surface and is not
+part of this successor.
+
+**Consequence:** Ranking, retrieval, graph behavior, and no-opt-in CLI/MCP
+responses remain unchanged. An opt-in nomination response omits `results` and
+`not_citable`; explicit expansion remains the only way to receive a full
+`chunk_text` through this path. PR #22 and its qualification evidence remain
+unchanged; this successor preserves the qualified projection and verifies the
+response boundary separately.
+
+**Residual uncertainty:** The qualified context counts include exact previews
+and use RC1 whitespace tokenization. They do not represent tokenizer-accurate
+costs or establish behavior outside the tested selector/aperture.
+
+**Reconsideration trigger:** A consumer contract that requires both full rows
+and compact nominations in the same response, or a later qualified projection
+that changes the preview.
+
+---
+
+## 2026-09-25 — Stage 1A canonical nomination envelope + expansion handles
+
+**Status:** Accepted for this workbench slice. Not promoted. Implements issue #21.
+
+**Decision:** Add one canonical `Nomination` projection over already-ranked
+ordinary rows plus transparent `exp1:<base64url>` expansion handles resolved
+by `resolve_expansion`. Legacy `run_query`, the default CLI list, the default
+CLI/single-database MCP envelopes, and the default shared
+`{scope, trust_profile, results}` response stay unchanged.
+
+**Context:** `docs/VNEXT_RETRIEVAL_PLAN.md` (Stage 1) leaves the broader
+ordinary-result nomination contract open; promoted `GraphAdmission` is only a
+graph-derived sidecar. `QueryResult` already carries doc/chunk identity,
+citation class, trust profile, signal, ranks, distance, weak-fit, and
+expansion depths, but the full `chunk_text` rides on every row and there is no
+stable per-row identity or explicit second-stage expansion. The engine has no
+normalized freshness field; `updated_at` is indexing time.
+
+**Inference:** The supported change is a pure additive projection: one
+nomination per ranked row in input order, a deterministic 280-char exact
+preview (matching the human CLI excerpt, not a generated summary), preserved
+multi-signal `retrieval_reasons`, full ranking diagnostics, `UNKNOWN`
+freshness with raw status, and a self-describing handle bound to
+scope/doc/chunk/hash. Expansion reads the stored chunk and fails closed on
+malformed, missing, stale (hash mismatch returns no text), or scope-mismatched
+handles. Unknowns stay null; `source_root` is never serialized.
+
+**Alternatives:** Opaque hash-only handles cannot resolve without re-running
+the query, so the handle carries its coordinates transparently with JSON +
+base64url. Including ranks/scores in the nomination identity would make
+identity brittle to diagnostics, so identity binds query + scope + source +
+signal only. Returning full chunk text inside nominations would defeat the
+context-efficiency purpose. Changing RRF, traversal, embeddings, chunking,
+reranking, or the index format was out of scope.
+
+**Consequence:** Callers ask with CLI `--json --envelope --nominations`,
+single-database MCP `envelope=true` plus `nominations=true`, or shared MCP
+`nominations=true`, and expand with CLI `expand-nomination <handle>` or MCP
+`expand_nomination`. Nomination ids are `nom1:<sha256>` over compact UTF-8
+JSON with sorted keys and no timestamp. Conduit still owns context
+compilation; this slice adds no Conduit adapter and no RC6 writer provenance.
+
+**Residual uncertainty:** A row whose raw status is `stale`, `current`,
+unrecognized, or absent still projects as `freshness="UNKNOWN"`. A handle
+carrying a null hash resolves when the doc/chunk exists but reports
+`content_hash_match=null`. Preview truncation is character-based (280) with a
+whitespace token count alongside, not a tokenizer guarantee.
+
+**Reconsideration trigger:** A stored freshness fact stronger than
+`citation_class`, a Conduit adapter needing a different field, or frozen
+qualification showing compact nominations lose required context.
+
+---
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.

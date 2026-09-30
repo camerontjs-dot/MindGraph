@@ -115,6 +115,8 @@ mindgraph query "what does this vault say about X" --db mindgraph.sqlite
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json --envelope
 mindgraph query "..." --db mindgraph.sqlite --expand --json --envelope --graph-admission
+mindgraph query "..." --db mindgraph.sqlite --json --envelope --nominations --lexical-only
+mindgraph expand-nomination <handle> --db mindgraph.sqlite --json
 mindgraph query "..." --db mindgraph.sqlite --expand
 mindgraph query "..." --db mindgraph.sqlite --expand --depth 2 --expand-top-k 10
 mindgraph query "..." --db mindgraph.sqlite --associate --associate-top-k 10
@@ -438,7 +440,7 @@ behavior under load, and RAM and latency figures are unmeasured.
 
 ### Tools
 
-`query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, `expand_top_k`, `associate`, `associate_top_k`, `associate_seed_k`, `envelope`, and `graph_admission`. By default, the MCP response content is a JSON array of `QueryResult` records. With `envelope=true` (or CLI `--json --envelope`), it returns an object containing `schema_version`, `intent_resolution`, `routing`, and `results`; legacy list output remains unchanged when the flag is omitted. `graph_admission` defaults to false and requires `envelope=true`. When both are set, the envelope also includes `graph_admissions`: an empty list or one `GraphAdmission` over an already-produced depth-1 expanded row. The flag does not turn expansion on by itself. `routing` is single-database metadata for the bound index (not multi-index federation). In a smoke run against the example vault, the default list path matched the CLI JSON output exactly:
+`query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, `expand_top_k`, `associate`, `associate_top_k`, `associate_seed_k`, `envelope`, `graph_admission`, and `nominations`. By default, the MCP response content is a JSON array of `QueryResult` records. With `envelope=true` (or CLI `--json --envelope`), it returns an object containing `schema_version`, `intent_resolution`, `routing`, and `results`; legacy list output remains unchanged when the flag is omitted. `graph_admission` defaults to false and requires `envelope=true`. When both are set, the envelope also includes `graph_admissions`: an empty list or one `GraphAdmission` over an already-produced depth-1 expanded row. The flag does not turn expansion on by itself. `nominations` also defaults to false and requires `envelope=true`. When set, the response includes one canonical `Nomination` per ranked row and omits the text-bearing `results` and `not_citable` arrays. Shared MCP `query` takes `nominations` the same way and still requires an explicit `scope`. `routing` is single-database metadata for the bound index (not multi-index federation). In a smoke run against the example vault, the default list path matched the CLI JSON output exactly:
 
 ```json
 {
@@ -452,6 +454,8 @@ behavior under load, and RAM and latency figures are unmeasured.
 Observed result paths from that smoke were `feedback-loops.md`, `reinforcing-loops.md`, `balancing-loops.md`, and `systems-archetypes.md`, with `expansion_depth` values `[0, 1, 1, 2]`.
 
 `graph_neighbors` runs the same lookup as `mindgraph neighbors --json`. Parameter: `doc_id`. The MCP response content is a JSON array of `NeighborResult` records, including dangling edges with `target_path = null`. In the same smoke, calling `graph_neighbors` with `doc_id = "c8a1be119b7ad0c3"` returned the single dangling edge the CLI lookup also returns.
+
+`expand_nomination` resolves one `exp2` handle to the stored chunk in the selected index. Single-database MCP takes `expansion_handle`. Shared MCP also requires `scope`. A malformed, stale, missing, or index-mismatched handle returns a tool error and no source text. Legacy `exp1` handles are not reinterpreted; query again to mint a current handle. Expansion adds context, not authority. The CLI equivalent is `mindgraph expand-nomination`.
 
 ### claude.ai web
 
