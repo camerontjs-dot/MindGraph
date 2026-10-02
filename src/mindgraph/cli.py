@@ -10,6 +10,7 @@ import typer
 
 from mindgraph import daemon, db, embedders, idle_lifecycle, parser, index_identity
 from mindgraph import graph_admission
+from mindgraph import nominations as nominations_mod
 from mindgraph import query as query_mod
 from mindgraph.exceptions import EmbeddingError, IngestionError, MindgraphError
 from mindgraph import intent as intent_mod
@@ -922,6 +923,19 @@ def query(
             "Does not change the legacy list or the default envelope."
         ),
     ),
+    nominations_flag: bool = typer.Option(
+        False,
+        "--nominations",
+        help=(
+            "With --json --envelope, return compact nominations instead of "
+            "text-bearing result arrays. Does not change ranking, the legacy "
+            "list, or the default envelope."
+        ),
+    ),
+    nomination_scope: str | None = typer.Option(
+        None, "--nomination-scope",
+        help="Explicit caller scope alias for compact nominations; independent of stored index_id.",
+    ),
     citable_only: bool = typer.Option(
         False,
         "--citable-only",
@@ -945,6 +959,10 @@ def query(
     Pass --envelope with --json to include intent graph resolution metadata.
     Pass --graph-admission with --json --envelope to add at most one typed
     graph nomination. It does not run expansion by itself.
+    Pass --nominations with --json --envelope to return one canonical compact
+    nomination per ranked row with an explicit expansion handle. This mode
+    omits the text-bearing results and not_citable arrays; the default envelope
+    and legacy list remain unchanged.
     Plain --json preserves the legacy result-list contract for existing callers.
     Text output still shows intent resolution by default. Use --no-intent to skip.
     """
@@ -954,8 +972,19 @@ def query(
             err=True,
         )
         raise typer.Exit(code=1)
-    if identity_envelope and (not as_json or envelope):
-        typer.echo("error: --identity-envelope requires --json and cannot use --envelope", err=True)
+    if identity_envelope and (not as_json or (envelope and not nominations_flag)):
+        typer.echo("error: --identity-envelope requires --json; --envelope is allowed only with --nominations", err=True)
+        raise typer.Exit(code=1)
+    if nominations_flag and not (as_json and envelope):
+        typer.echo(
+            "error: --nominations requires --json --envelope",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if nomination_scope is not None and (
+        not nomination_scope.strip() or not (as_json and envelope and nominations_flag)
+    ):
+        typer.echo("error: --nomination-scope requires compact nomination mode and a nonblank alias", err=True)
         raise typer.Exit(code=1)
     _configure_logging(verbose)
     try:
@@ -1036,7 +1065,7 @@ def query(
                         pass
 
         if as_json:
-            if identity_envelope:
+            if identity_envelope and not nominations_flag:
                 out = index_identity.query_envelope(database_identity, results)
             elif envelope:
                 # Match MCP envelope shape so CLI and tool callers share one parser.
@@ -1074,6 +1103,22 @@ def query(
                             k=final_top_k,
                         )
                     ]
+                if nominations_flag:
+                    out["nominations"] = [
+                        item.model_dump()
+                        for item in nominations_mod.project_nominations(
+                            results,
+                            query_text=formatted_question,
+                         scope_index=nomination_scope,)
+                    ]
+                    # Compact mode is useful only if this response does not
+                    # also serialize the legacy full-chunk result arrays.
+                    out.pop("results", None)
+                    out.pop("not_citable", None)
+                    if identity_envelope:
+                        # Keep the compact retrieval schema and metadata; the
+                        # nested producer binding declares its own v1 schema.
+                        out["database_identity"] = database_identity
             else:
                 emitted = results
                 if citable_only:
@@ -1156,6 +1201,71 @@ def neighbors(
 
     for idx, neighbor in enumerate(results, start=1):
         typer.echo(_format_neighbor_block(idx, neighbor))
+
+
+@app.command("expand-nomination")
+def expand_nomination(
+    expansion_handle: str = typer.Argument(..., help="Expansion handle from a nomination."),
+    db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of text."
+    ),
+    scope: str | None = typer.Option(
+        None, "--scope", help="Original registered caller alias, when one was supplied at query time.",
+    ),
+    identity_envelope: bool = typer.Option(
+        False, "--identity-envelope",
+        help="With --json, validate the v1 producer binding before text and add database_identity.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Expand one nomination handle into exact source-backed chunk text.
+
+    Fail-closed: a malformed, missing, stale, or scope-mismatched handle
+    exits non-zero with an explicit error and returns no source text.
+    Expansion adds context, not authority.
+    """
+    if identity_envelope and not as_json:
+        typer.echo("error: --identity-envelope requires --json", err=True)
+        raise typer.Exit(code=1)
+    _configure_logging(verbose)
+    try:
+        conn = db.get_db(db_path, read_only=True)
+        db.validate_query_schema(conn, db_path)
+    except MindgraphError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    try:
+        try:
+            database_identity = None
+            if identity_envelope:
+                conn.execute("BEGIN")
+                database_identity = index_identity.read_identity(conn)
+            expanded = nominations_mod.resolve_expansion(conn, expansion_handle, scope_index=scope)
+        except MindgraphError as e:
+            logger.error(str(e))
+            raise typer.Exit(code=1)
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if as_json:
+        payload = expanded.model_dump()
+        if database_identity is not None:
+            payload["database_identity"] = database_identity
+        typer.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    typer.echo(f"title: {expanded.title}")
+    typer.echo(f"path: {expanded.path}")
+    typer.echo(f"doc_id: {expanded.doc_id} chunk {expanded.chunk_index}")
+    typer.echo(f"citation: {expanded.citation_class}")
+    typer.echo(f"freshness: {expanded.freshness}")
+    typer.echo("(expansion adds context, not authority)")
+    typer.echo("--- chunk ---")
+    typer.echo(expanded.chunk_text)
 
 
 @app.command("serve-mcp")

@@ -4,6 +4,40 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Compose producer identity with explicit nominations
+
+**Status:** Separate related integration candidate; constituent qualification
+does not qualify this composed object. Promotion remains a separate decision.
+
+**Context:** Producer #42 and exact-preview Stage 1 #44 received separate
+finite fresh qualification. Their independent objects remain frozen. The
+producer's CLI identity mode excluded the ordinary envelope required by
+compact nominations, while Stage 1's shared selected expansion did not enter
+the producer's required-identity snapshot. The actual three-scope deployment
+needs both contracts in one explicitly identified runtime.
+
+**Decision:** Admit the explicit compact-plus-identity CLI combination. Retain
+compact retrieval metadata and attach complete nested v1 producer identity,
+even with zero nominations. Keep identity-only response keys unchanged.
+Selected CLI expansion can require that same producer snapshot explicitly;
+shared expansion always validates configured required identity before text.
+Preserve caller alias, stored index and the two trust fields separately.
+
+**Lineage and limits:** Compose only the independently disposed #42 and #44
+objects; parallel #45 does not inherit either gate. Preserve #41's ambiguous
+JSON failure, #39's preview failure and predecessor inconclusive apparatus
+records. Historical decision status above remains a record of its own slice.
+This composition does not activate selector policy, automatic expansion or
+MainFrame-specific lifecycle semantics in the generic engine. Retrieval and
+expansion add context; source authority remains external.
+
+> **Binds:** producer-bound compact retrieval and selected expansion
+> **Tier:** T2 (required producer binding validated before retrieval or text)
+> **Check:** `tests/test_producer_bound_nominations.py`; real CLI/shared-MCP controls
+> **Escape:** rebuild an explicitly identified producer stage; preserve failed candidate evidence
+
+---
+
 ## 2026-10-02 — Reject duplicate producer identity members
 
 **Status:** Separate repair successor; independent qualification pending.
@@ -127,6 +161,83 @@ Reconsider if that threat model is required. Rebuild and stage legacy databases;
 do not infer or silently backfill identity on query. See
 [`docs/index-identity-v1.md`](docs/index-identity-v1.md).
 
+---
+
+## 2026-10-02 — Preserve exact source characters in compact previews
+
+**Status:** Accepted for this isolated successor; qualification and promotion
+remain separate decisions.
+
+**Context:** Fresh qualification of frozen PR #39 found a compact preview
+that replaced source characters with an added ellipsis. The stored chunk had
+no ellipsis. Preserve the [failed qualification](https://github.com/camerontjs-dot/MindGraph/pull/39#issuecomment-5956598133)
+on `af0ee2cdb412c2438785bd6ae92aff03c53bfca2`; the selected-expansion and
+MCP qualification cases were not run after that first failure.
+
+**Decision:** Take at most 280 characters from the flattened stored chunk,
+without adding text. The existing `preview_truncated` flag reports omitted
+source characters, and `preview_chars` reports the returned length. This
+narrows the implementation of the 2026-09-30 exact-preview decision; it does
+not replace its index-binding or explicit-expansion contract.
+
+**Consequences:** Long previews retain the source characters at positions
+277–279. Nomination identity, ordering, provenance, expansion handles and
+legacy responses retain their contracts. Regression tests compare the
+preview with stored source text at the budget boundary and through the real
+CLI, stdio MCP and shared-MCP routes.
+
+**Alternatives:** Describing an added ellipsis as an exact extract would
+weaken the documented source relationship. Changing the compact schema or
+introducing an expansion policy is unnecessary for this defect.
+
+**Non-claims:** The successor does not establish source truth, current raw
+bytes, retrieval quality, selector policy, installed promotion or release.
+PR #37 and issue #38 retain their historical dispositions.
+
+> **Binds:** Stage 1 compact-preview projection
+> **Tier:** T1 (detected)
+> **Check:** `tests/test_nominations.py` and `tests/test_stage1_boundaries.py`
+> **Escape:** preserve a failed candidate and repair in a separately identified
+> successor; do not promote a preview that fails the exact-extract contract
+
+---
+
+## 2026-09-30 — Maintained Stage 1 nominations and index-bound expansion
+
+**Status:** Accepted for this isolated candidate; pending promotion review.
+
+**Decision:** Project existing ranked results to canonical `nom1` nominations
+only when requested. Compact transport replaces full result arrays with exact
+previews and explicit `exp2` locators. Expansion validates independently stored
+index identity and source coordinates in one read snapshot before returning
+the stored chunk. Caller scope aliases remain separate from stored index ids.
+Shared expansion retains document `trust_profile`; the registration label is
+reported separately as `scope_trust_profile`.
+
+**Evidence boundary:** [PR #22](https://github.com/camerontjs-dot/MindGraph/pull/22)
+qualified nomination projection. Preserve
+[PR #23](https://github.com/camerontjs-dot/MindGraph/pull/23) as the failed
+cross-index predecessor. [Issue #31](https://github.com/camerontjs-dot/MindGraph/issues/31)
+qualified standalone exp2 on `0d60e88f6ac2a5ca26fa870774181c21a7afd65a`.
+Extract only its engine surface and regression tests onto current `main`;
+exclude its repair tooling and experiment documentation. PR #37 and the
+inconclusive #38 oracle remain preserved. This candidate requires fresh tests.
+
+**Consequences:** Legacy responses and retrieval are unchanged. Missing,
+ambiguous, contradictory, mismatched or stale bindings fail without text.
+Legacy exp1 requires requery. Freshness remains `UNKNOWN`, raw source status
+and citation authority survive, and unknown hashes stay null.
+
+**Non-claims:** No authentication, raw-file custody, retrieval-quality gain,
+Conduit integration, or selector/expansion-budget policy. #33 was inconclusive;
+#34/#35 remain blocked. No merge, installed promotion or release.
+
+**Alternatives:** Merging preserved experimental branches would carry repair
+apparatus into the maintained engine. Deriving index identity from a scope
+alias, trust label or filename would repeat the #23 failure. Automatic
+expansion would decide a policy unsupported by completed evidence.
+
+---
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.

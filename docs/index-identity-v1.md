@@ -59,15 +59,33 @@ is complete. A read transaction covers identity, current document-map validation
 and query execution. Missing, malformed, stale or contradictory identity fails
 before returning nominations. Zero results remain legitimate for an identified
 index. Results retain the complete legacy row fields and citation classes.
-This envelope is separate from the existing `--envelope` intent contract; the
-two flags cannot be combined. Legacy arrays and intent envelopes are unchanged.
+The identity-only envelope remains separate from the ordinary `--envelope`
+intent contract. The flags can be combined explicitly in compact mode:
+
+```sh
+mindgraph query QUESTION --db DB --json --envelope --nominations --identity-envelope
+mindgraph expand-nomination 'exp2:...' --db DB --json --identity-envelope
+```
+
+The compact query retains its existing retrieval schema, intent/routing
+metadata and citation counts, adds the complete nested v1 `database_identity`,
+and omits full result arrays. Empty nominations still carry producer identity.
+Selected CLI expansion validates that binding and its document maps on the
+same read snapshot as the exp2 target before returning text, then includes
+`database_identity`. The ordinary list, envelope, identity-only three-key
+response and unbound legacy expansion remain unchanged.
 
 Shared MCP `query` accepts optional `identity_envelope=true`. The selected alias
 and configured trust must match the stored binding. `serve-daemon` and
 `daemon-start` can require identity for one configured alias using
 `--require-scope-identity NAME=INDEX_ID:LIFECYCLE_ROOT`. This also checks the
 stored alias/trust, validates before startup, and forces the identity envelope
-on that scope's queries. Neighbor calls validate required scope identity too.
+on that scope's queries. Compact shared queries preserve the same producer
+identity independently of nomination count. Neighbor calls and explicit
+selected expansion validate required scope identity too. Shared expansion
+keeps document `trust_profile` separate from registration `scope_trust_profile`,
+and caller `scope`/`scope_index` separate from stored `index_id`. It includes
+`database_identity` whenever that producer binding is required or requested.
 Unconfigured/unknown scopes fail; there is no fallback.
 
 MainFrame's explicit three-scope configuration requires the operations binding.
