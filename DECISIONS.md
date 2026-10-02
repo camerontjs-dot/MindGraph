@@ -4,6 +4,41 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Independently bind the producer source-document map
+
+**Status:** Successor implementation; independent qualification pending.
+
+**Observed defect:** Exact-head operations qualification stopped with `BLOCK`
+when the v1 source-map hash in an otherwise valid operations database was
+replaced by the genuine projects map hash. The database map was unchanged, and
+the engine and consumer accepted a zero-result query. The 2026-09-30 candidate
+and its negative receipt remain preserved.
+
+**Decision:** Keep the v1 wire contract and independently recompute the source
+projection from every stored document at bind time and each identity read.
+The projection excludes only the stored `path`, sorts by namespace/source path,
+and uses compact sorted-key JSON. Its hash must equal the producer's explicit
+`source_document_map_sha256`. Identity, map validation and retrieval remain on
+one SQLite read snapshot.
+
+**Ownership:** The producer validates selected source bytes and manifest
+membership. The generic engine checks that the declared source map describes
+the queried database. This does not hard-code lifecycle aliases or corpus
+selection into MindGraph. Source claims and currentness remain external authority.
+
+**Compatibility and limits:** Query/index identity keys and legacy two-scope
+transports remain unchanged. A binding with an arbitrary source-map hash now
+fails explicitly; there is no migration, inference or silent rebinding. The
+check does not authenticate an authorized writer who replaces documents and
+all bindings together. See [`docs/index-identity-v1.md`](docs/index-identity-v1.md).
+
+> **Binds:** v1 producer binding and identity-bearing retrieval
+> **Tier:** T2 (mismatched source-map declarations and reads blocked)
+> **Check:** `tests/test_index_identity.py`; real CLI and shared-MCP controls
+> **Escape:** rebuild and stage a separate database through its corpus producer
+
+---
+
 ## 2026-09-30 — Producer-bound database identity for empty nominations
 
 **Status:** Successor design; independent cross-repository qualification pending.

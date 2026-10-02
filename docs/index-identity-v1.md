@@ -26,6 +26,16 @@ The canonical database map includes each document's id, index, trust, namespace,
 source root/path, display path, stored path and content hash, sorted by id, encoded
 as compact sorted-key JSON. No query result is used to establish this binding.
 
+The source-document map uses the same stored fields except `path`, ordered by
+`(namespace, source_path)` and encoded as compact sorted-key UTF-8 JSON.
+`source_document_map_sha256` must equal the SHA-256 of that projection. The
+producer checks selected source bytes against this map before binding; the
+engine independently recomputes it at bind time and on every identity read.
+A valid-format source-map hash from another index is rejected even when the
+query returns no rows. This check adds no response fields or schema version.
+Existing declarations with arbitrary source-map hashes must be rebuilt through
+their producer; queries never repair or rebind them.
+
 `index-identity --db DB` reads and validates the binding without mutation.
 `query QUESTION --db DB --json --identity-envelope` returns:
 

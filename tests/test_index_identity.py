@@ -36,6 +36,18 @@ def produce(tmp_path, scope="operations"):
                                  "--index-id", identity["index_id"], "--trust-profile", identity["trust_profile"],
                                  "--namespace", "fixture", "--display-prefix", identity["lifecycle_root"] + "/fixture"])
     assert result.exit_code == 0, result.output
+    # The producer's source map is a declared contract, not an arbitrary SHA.
+    # Derive the expected row from the selected source and ingestion inputs.
+    source_map = [{
+        "id": hashlib.sha256(f"{identity['index_id']}\0fixture\0README.md".encode()).hexdigest()[:16],
+        "namespace": "fixture", "index_id": identity["index_id"],
+        "trust_profile": identity["trust_profile"], "source_root": str(root.resolve()),
+        "source_path": "README.md", "display_path": identity["lifecycle_root"] + "/fixture/README.md",
+        "content_hash": hashlib.sha256((root / "README.md").read_bytes()).hexdigest(),
+    }]
+    identity["source_document_map_sha256"] = hashlib.sha256(
+        json.dumps(source_map, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     identity_file = tmp_path / f"{scope}-identity.json"
     identity_file.write_text(json.dumps(identity))
     result = runner.invoke(app, ["bind-index", "--db", str(path), "--identity-file", str(identity_file)])
@@ -111,6 +123,45 @@ def test_stale_document_map_is_rejected_on_no_hit_and_cannot_be_rebound(tmp_path
     result = runner.invoke(app, ["bind-index", "--db", str(path), "--identity-file", str(identity_file)])
     assert result.exit_code != 0
     assert "existing binding differs" in result.output
+
+
+@pytest.mark.parametrize("question", ["compass", "zzmissingdevelopmentidentity"])
+def test_valid_wrong_source_map_is_rejected_without_returned_rows_as_authority(tmp_path, question, caplog):
+    path, identity = produce(tmp_path)
+    _, projects = produce(tmp_path, "projects")
+    identity["source_document_map_sha256"] = projects["source_document_map_sha256"]
+    conn = db.get_db(str(path))
+    with conn:
+        conn.execute("UPDATE index_meta SET value = ? WHERE key = 'index_identity'", (json.dumps(identity),))
+    conn.close()
+    result = query(path, question)
+    assert result.exit_code != 0
+    assert "producer source document map differs" in caplog.text
+    result = runner.invoke(app, ["index-identity", "--db", str(path)])
+    assert result.exit_code != 0
+    assert "producer source document map differs" in result.output
+    result = runner.invoke(app, ["serve-daemon", "--scope", f"operations:operations_status={path}",
+                                 "--require-scope-identity", "operations=mainframe-operations:40_operations"])
+    assert result.exit_code != 0
+    assert "producer source document map differs" in result.output
+
+
+def test_valid_wrong_source_map_cannot_be_bound_to_unidentified_documents(tmp_path):
+    path, identity = produce(tmp_path)
+    conn = db.get_db(str(path))
+    with conn:
+        conn.execute("DELETE FROM index_meta WHERE key = 'index_identity'")
+    conn.close()
+    identity = {field: identity[field] for field in index_identity.DECLARATION_FIELDS}
+    identity["source_document_map_sha256"] = hashlib.sha256(b"different genuine source map").hexdigest()
+    declaration_file = tmp_path / "wrong-source-map.json"
+    declaration_file.write_text(json.dumps(identity))
+    result = runner.invoke(app, ["bind-index", "--db", str(path), "--identity-file", str(declaration_file)])
+    assert result.exit_code != 0
+    assert "producer source document map differs" in result.output
+    conn = db.get_db(str(path), read_only=True)
+    assert conn.execute("SELECT COUNT(*) FROM index_meta WHERE key = 'index_identity'").fetchone()[0] == 0
+    conn.close()
 
 
 def test_projects_map_cannot_be_stamped_with_operations_declaration(tmp_path):

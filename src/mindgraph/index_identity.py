@@ -24,6 +24,7 @@ MAP_FIELDS = (
     "id", "index_id", "trust_profile", "namespace", "source_root",
     "source_path", "display_path", "path", "content_hash",
 )
+SOURCE_MAP_FIELDS = tuple(field for field in MAP_FIELDS if field != "path")
 
 
 def _fail(detail):
@@ -85,6 +86,15 @@ def _map_hash(rows):
     return hashlib.sha256(data).hexdigest()
 
 
+def _source_map_hash(rows):
+    """Canonical producer projection, independently derived from stored rows."""
+    projection = [
+        {field: row[field] for field in SOURCE_MAP_FIELDS}
+        for row in sorted(rows, key=lambda row: (row["namespace"], row["source_path"]))
+    ]
+    return _map_hash(projection)
+
+
 @contextmanager
 def read_snapshot(conn):
     """Keep identity, map and retrieval on one read transaction."""
@@ -118,6 +128,8 @@ def read_identity(conn, *, expected=None):
     _validate_map(identity, rows)
     if identity["document_count"] != len(rows) or identity["database_document_map_sha256"] != _map_hash(rows):
         _fail("stored document map changed after producer binding")
+    if identity["source_document_map_sha256"] != _source_map_hash(rows):
+        _fail("producer source document map differs from stored documents")
     return identity
 
 
@@ -136,7 +148,9 @@ def bind_identity(conn, declaration):
         if old is not None:
             if json.loads(old[0]) != identity:
                 _fail("existing binding differs; rebuild a fresh staged database")
-        else:
+        if declaration["source_document_map_sha256"] != _source_map_hash(rows):
+            _fail("producer source document map differs from stored documents")
+        if old is None:
             conn.execute("INSERT INTO index_meta (key, value) VALUES (?, ?)", (KEY, encoded))
         conn.commit()
         return identity
