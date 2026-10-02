@@ -4,6 +4,31 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Explicit embedding device for local runtime recovery
+
+**Status:** Additive runtime configuration; separate from source-map repair.
+
+**Observed condition:** The local MPS backend emitted an insufficient-memory
+error during ordinary semantic queries. Such runtime failure does not establish
+a successful retrieval even when the process returns normally.
+
+**Decision:** Support an explicit `MINDGRAPH_DEVICE` value passed to the actual
+SentenceTransformer loader. `cpu`, `mps`, `cuda` and `cuda:N` are accepted.
+Omission preserves library auto-detection. Invalid configuration and backend
+failure are explicit errors with no retry on another device. Cache-only normal
+loading and explicit model-bootstrap authority remain unchanged.
+
+**Limits:** This selects the inference device; it does not change models,
+ranking, corpus selection or retrieval-quality policy. Real CPU inference is
+required for CPU runtime claims; constructor tests alone cover configuration.
+
+> **Binds:** configured embedding loader and explicit bootstrap
+> **Tier:** T2 (invalid configured device blocked)
+> **Check:** `tests/test_embedders.py`; real CPU CLI and daemon inference
+> **Escape:** select an available explicit device or repair the requested backend
+
+---
+
 ## 2026-10-02 — Independently bind the producer source-document map
 
 **Status:** Successor implementation; independent qualification pending.

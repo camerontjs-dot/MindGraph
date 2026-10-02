@@ -138,6 +138,13 @@ mindgraph serve-mcp --db mindgraph.sqlite --verbose
 The commands above are the compatibility path: one database, stdio transport,
 and legacy list-shaped query/neighbor JSON by default.
 
+Set `MINDGRAPH_DEVICE=cpu` to explicitly run model loading and inference on
+CPU, including ingestion and MCP daemon startup. Supported explicit values are
+`cpu`, `mps`, `cuda` and `cuda:N`. Unset the variable to retain the embedding
+library's default device selection. Invalid values and unavailable backends
+fail explicitly; there is no automatic retry on another device. Normal model
+loading remains cache-only.
+
 ### Optional shared daemon
 
 The opt-in shared server loads one embedder and opens each declared index

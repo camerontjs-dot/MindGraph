@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -58,6 +59,19 @@ _REGISTRY: dict[str, EmbedderSpec] = {
 DEFAULT_EMBEDDER_KEY = "minilm"
 
 
+def resolve_embedding_device() -> str | None:
+    """Optional explicit runtime device; omission preserves library auto-detection."""
+    device = os.environ.get("MINDGRAPH_DEVICE")
+    if device is None:
+        return None
+    if re.fullmatch(r"cpu|mps|cuda(?::[0-9]+)?", device) is None:
+        raise EmbeddingError(
+            "Invalid MINDGRAPH_DEVICE; choose cpu, mps, cuda or cuda:N. "
+            "Unset it to use the embedding library's default device."
+        )
+    return device
+
+
 def resolve_embedder(name: str | None = None) -> EmbedderSpec:
     """Resolve an embedder key from CLI, env, or default."""
     raw = (name or os.environ.get("MINDGRAPH_EMBEDDER") or DEFAULT_EMBEDDER_KEY).strip()
@@ -89,6 +103,7 @@ def load_sentence_embedder(spec: EmbedderSpec):
     client has been closed`` even when the cache is warm, so we never open a
     network metadata request at query/ingest time.
     """
+    device = resolve_embedding_device()
     try:
         from sentence_transformers import SentenceTransformer
     except ModuleNotFoundError as exc:
@@ -98,7 +113,8 @@ def load_sentence_embedder(spec: EmbedderSpec):
         ) from exc
 
     try:
-        return SentenceTransformer(spec.model_id, local_files_only=True)
+        options = {"device": device} if device is not None else {}
+        return SentenceTransformer(spec.model_id, local_files_only=True, **options)
     except Exception as exc:
         raise EmbeddingError(
             f"Failed to load cached embedding model {spec.model_id!r} with "
@@ -116,6 +132,7 @@ def bootstrap_sentence_embedder(spec: EmbedderSpec):
     cache-only. This function is the only package-level path that permits the
     SentenceTransformer loader to resolve a model from its configured hub.
     """
+    device = resolve_embedding_device()
     try:
         from sentence_transformers import SentenceTransformer
     except ModuleNotFoundError as exc:
@@ -125,7 +142,8 @@ def bootstrap_sentence_embedder(spec: EmbedderSpec):
         ) from exc
 
     try:
-        return SentenceTransformer(spec.model_id)
+        options = {"device": device} if device is not None else {}
+        return SentenceTransformer(spec.model_id, **options)
     except Exception as exc:
         raise EmbeddingError(
             f"Failed to acquire embedding model {spec.model_id!r}: "
