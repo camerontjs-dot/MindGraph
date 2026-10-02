@@ -8,8 +8,9 @@ from pathlib import Path
 
 import typer
 
-from mindgraph import daemon, db, embedders, idle_lifecycle, parser
+from mindgraph import daemon, db, embedders, idle_lifecycle, parser, index_identity
 from mindgraph import graph_admission
+from mindgraph import nominations as nominations_mod
 from mindgraph import query as query_mod
 from mindgraph.exceptions import EmbeddingError, IngestionError, MindgraphError
 from mindgraph import intent as intent_mod
@@ -796,6 +797,45 @@ def _format_neighbor_block(idx: int, neighbor) -> str:
     )
 
 
+@app.command("bind-index")
+def bind_index(
+    identity_file: Path = typer.Option(..., "--identity-file"),
+    db_path: str = typer.Option("mindgraph.sqlite", "--db"),
+):
+    """Bind an explicit producer declaration to an existing staged index."""
+    conn = None
+    try:
+        if not Path(db_path).is_file():
+            raise MindgraphError("Cannot bind a missing database")
+        declaration = index_identity.parse_identity_json(identity_file.read_text(encoding="utf-8"))
+        conn = db.get_db(db_path)
+        db.validate_query_schema(conn, db_path)
+        typer.echo(json.dumps(index_identity.bind_identity(conn, declaration), indent=2))
+    except (MindgraphError, OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.command("index-identity")
+def inspect_index_identity(db_path: str = typer.Option("mindgraph.sqlite", "--db")):
+    """Read and validate stored database authority; never infer or backfill it."""
+    conn = None
+    try:
+        conn = db.get_db(db_path, read_only=True)
+        db.validate_query_schema(conn, db_path)
+        with index_identity.read_snapshot(conn):
+            typer.echo(json.dumps(index_identity.read_identity(conn), indent=2))
+    except MindgraphError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @app.command()
 def query(
     question: str = typer.Argument(..., help="The free-text query."),
@@ -870,6 +910,10 @@ def query(
         "--envelope",
         help="With --json, emit intent metadata plus results instead of the legacy result list.",
     ),
+    identity_envelope: bool = typer.Option(
+        False, "--identity-envelope",
+        help="With --json, require producer-bound database identity and emit the v1 identity envelope.",
+    ),
     graph_admission_flag: bool = typer.Option(
         False,
         "--graph-admission",
@@ -878,6 +922,19 @@ def query(
             "nomination over the already-produced depth-1 expanded rows. "
             "Does not change the legacy list or the default envelope."
         ),
+    ),
+    nominations_flag: bool = typer.Option(
+        False,
+        "--nominations",
+        help=(
+            "With --json --envelope, return compact nominations instead of "
+            "text-bearing result arrays. Does not change ranking, the legacy "
+            "list, or the default envelope."
+        ),
+    ),
+    nomination_scope: str | None = typer.Option(
+        None, "--nomination-scope",
+        help="Explicit caller scope alias for compact nominations; independent of stored index_id.",
     ),
     citable_only: bool = typer.Option(
         False,
@@ -902,6 +959,10 @@ def query(
     Pass --envelope with --json to include intent graph resolution metadata.
     Pass --graph-admission with --json --envelope to add at most one typed
     graph nomination. It does not run expansion by itself.
+    Pass --nominations with --json --envelope to return one canonical compact
+    nomination per ranked row with an explicit expansion handle. This mode
+    omits the text-bearing results and not_citable arrays; the default envelope
+    and legacy list remain unchanged.
     Plain --json preserves the legacy result-list contract for existing callers.
     Text output still shows intent resolution by default. Use --no-intent to skip.
     """
@@ -910,6 +971,20 @@ def query(
             "error: --graph-admission requires --json --envelope",
             err=True,
         )
+        raise typer.Exit(code=1)
+    if identity_envelope and (not as_json or (envelope and not nominations_flag)):
+        typer.echo("error: --identity-envelope requires --json; --envelope is allowed only with --nominations", err=True)
+        raise typer.Exit(code=1)
+    if nominations_flag and not (as_json and envelope):
+        typer.echo(
+            "error: --nominations requires --json --envelope",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if nomination_scope is not None and (
+        not nomination_scope.strip() or not (as_json and envelope and nominations_flag)
+    ):
+        typer.echo("error: --nomination-scope requires compact nomination mode and a nonblank alias", err=True)
         raise typer.Exit(code=1)
     _configure_logging(verbose)
     try:
@@ -922,6 +997,10 @@ def query(
 
     try:
         try:
+            database_identity = None
+            if identity_envelope:
+                conn.execute("BEGIN")
+                database_identity = index_identity.read_identity(conn)
             if lexical_only and associate:
                 raise EmbeddingError(
                     "--associate requires semantic retrieval; remove --lexical-only"
@@ -986,7 +1065,9 @@ def query(
                         pass
 
         if as_json:
-            if envelope:
+            if identity_envelope and not nominations_flag:
+                out = index_identity.query_envelope(database_identity, results)
+            elif envelope:
                 # Match MCP envelope shape so CLI and tool callers share one parser.
                 if resolution is not None:
                     resolution_payload = resolution.as_transport_payload()
@@ -1022,6 +1103,22 @@ def query(
                             k=final_top_k,
                         )
                     ]
+                if nominations_flag:
+                    out["nominations"] = [
+                        item.model_dump()
+                        for item in nominations_mod.project_nominations(
+                            results,
+                            query_text=formatted_question,
+                         scope_index=nomination_scope,)
+                    ]
+                    # Compact mode is useful only if this response does not
+                    # also serialize the legacy full-chunk result arrays.
+                    out.pop("results", None)
+                    out.pop("not_citable", None)
+                    if identity_envelope:
+                        # Keep the compact retrieval schema and metadata; the
+                        # nested producer binding declares its own v1 schema.
+                        out["database_identity"] = database_identity
             else:
                 emitted = results
                 if citable_only:
@@ -1106,6 +1203,71 @@ def neighbors(
         typer.echo(_format_neighbor_block(idx, neighbor))
 
 
+@app.command("expand-nomination")
+def expand_nomination(
+    expansion_handle: str = typer.Argument(..., help="Expansion handle from a nomination."),
+    db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of text."
+    ),
+    scope: str | None = typer.Option(
+        None, "--scope", help="Original registered caller alias, when one was supplied at query time.",
+    ),
+    identity_envelope: bool = typer.Option(
+        False, "--identity-envelope",
+        help="With --json, validate the v1 producer binding before text and add database_identity.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Expand one nomination handle into exact source-backed chunk text.
+
+    Fail-closed: a malformed, missing, stale, or scope-mismatched handle
+    exits non-zero with an explicit error and returns no source text.
+    Expansion adds context, not authority.
+    """
+    if identity_envelope and not as_json:
+        typer.echo("error: --identity-envelope requires --json", err=True)
+        raise typer.Exit(code=1)
+    _configure_logging(verbose)
+    try:
+        conn = db.get_db(db_path, read_only=True)
+        db.validate_query_schema(conn, db_path)
+    except MindgraphError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    try:
+        try:
+            database_identity = None
+            if identity_envelope:
+                conn.execute("BEGIN")
+                database_identity = index_identity.read_identity(conn)
+            expanded = nominations_mod.resolve_expansion(conn, expansion_handle, scope_index=scope)
+        except MindgraphError as e:
+            logger.error(str(e))
+            raise typer.Exit(code=1)
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if as_json:
+        payload = expanded.model_dump()
+        if database_identity is not None:
+            payload["database_identity"] = database_identity
+        typer.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    typer.echo(f"title: {expanded.title}")
+    typer.echo(f"path: {expanded.path}")
+    typer.echo(f"doc_id: {expanded.doc_id} chunk {expanded.chunk_index}")
+    typer.echo(f"citation: {expanded.citation_class}")
+    typer.echo(f"freshness: {expanded.freshness}")
+    typer.echo("(expansion adds context, not authority)")
+    typer.echo("--- chunk ---")
+    typer.echo(expanded.chunk_text)
+
+
 @app.command("serve-mcp")
 def serve_mcp(
     db_path: str = typer.Option("mindgraph.sqlite", "--db", help="Path to SQLite DB."),
@@ -1182,11 +1344,25 @@ def parse_scope_specs(values: list[str] | None) -> dict[str, tuple[str, str]]:
     return scopes
 
 
+def parse_scope_identity_specs(values, requested):
+    """Expected values constrain stored authority; they never create it."""
+    required = {}
+    for raw in values or []:
+        name, sep, value = raw.partition("=")
+        index_id, colon, lifecycle_root = value.partition(":")
+        if not sep or not colon or not index_id or not lifecycle_root or name not in requested or name in required:
+            raise MindgraphError("invalid --require-scope-identity; use configured NAME=INDEX_ID:LIFECYCLE_ROOT once")
+        required[name] = {"retrieval_scope": name, "index_id": index_id,
+                          "trust_profile": requested[name][1], "lifecycle_root": lifecycle_root}
+    return required
+
+
 @app.command("serve-daemon")
 def serve_daemon(
     knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
     projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
     scope: list[str] = typer.Option(None, "--scope", help=SCOPE_SPEC_HELP),
+    require_scope_identity: list[str] = typer.Option(None, "--require-scope-identity"),
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port"),
     path: str = typer.Option("/mcp", "--path"),
@@ -1202,10 +1378,14 @@ def serve_daemon(
             "knowledge": (knowledge_db, "durable_knowledge"),
             "projects": (projects_db, "project_status"),
         }
+        required = parse_scope_identity_specs(require_scope_identity, requested)
         scopes = {}
         for name, (db_path, trust_profile) in requested.items():
             conn = mcp_server.open_database_readonly(db_path)
             conns.append(conn)
+            if name in required:
+                with index_identity.read_snapshot(conn):
+                    index_identity.read_identity(conn, expected=required[name])
             scopes[name] = (conn, trust_profile)
         spec = embedders.resolve_embedder(embedder)
         lifecycle = (
@@ -1215,7 +1395,7 @@ def serve_daemon(
         server = mcp_server.create_shared_server(
             scopes,
             _load_embedder(spec.key), host=host, port=port, path=path,
-            embedder_spec=spec, lifecycle=lifecycle,
+            embedder_spec=spec, lifecycle=lifecycle, required_identities=required,
         )
         if lifecycle:
             lifecycle.start()
@@ -1272,13 +1452,18 @@ def daemon_start(
     knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
     projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
     scope: list[str] = typer.Option(None, "--scope", help=SCOPE_SPEC_HELP),
+    require_scope_identity: list[str] = typer.Option(None, "--require-scope-identity"),
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port"),
     path: str = typer.Option("/mcp", "--path"),
     idle_seconds: float | None = typer.Option(None, "--idle-seconds", min=60.0),
 ):
     try:
-        parse_scope_specs(scope)
+        requested = parse_scope_specs(scope) or {
+            "knowledge": (knowledge_db, "durable_knowledge"),
+            "projects": (projects_db, "project_status"),
+        }
+        parse_scope_identity_specs(require_scope_identity, requested)
     except MindgraphError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)
@@ -1292,6 +1477,8 @@ def daemon_start(
                         "--projects-db", projects_db])
     if idle_seconds is not None:
         command.extend(["--idle-seconds", str(idle_seconds)])
+    for identity_spec in require_scope_identity or []:
+        command.extend(["--require-scope-identity", identity_spec])
     health_endpoint = daemon.health_url(host, port)
     typer.echo(json.dumps(daemon.start(state_dir, command, health_url=health_endpoint)))
 

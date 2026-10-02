@@ -43,6 +43,15 @@ Each result carries a `signal` label (`lexical`, `semantic`, `fused`, `expanded`
 
 Result rows also carry trust and provenance metadata for consumers that need to decide what to inspect next: `doc_type`, `domain`, `status`, `index_id`, `trust_profile`, `namespace`, `source_path`, `display_path`, `semantic_distance`, `weak_fit`, and `query_scope_warning`. The local `source_root` is retained for internal provenance but is omitted from serialized CLI/MCP results so host-specific absolute paths do not cross the boundary. `weak_fit` marks semantic-only rows beyond the current distance threshold. `query_scope_warning` appears when the query itself seems to ask for inbox, live/current, or project-status state that may belong in a different lifecycle database.
 
+### Database identity
+
+Consumers that require database-wide index authority, including on a no-hit
+query, can use the opt-in [producer-bound identity v1 contract](docs/index-identity-v1.md).
+The producer binds a validated corpus explicitly; the query reads that stored
+binding and its document-map hash in the retrieval snapshot. Legacy arrays and
+intent envelopes keep their existing shapes. Database identity remains nomination
+authority, not source verification.
+
 ### Tuning the scope warnings
 
 `query_scope_warning` fires on a keyword heuristic, and the shipped defaults
@@ -128,6 +137,13 @@ mindgraph serve-mcp --db mindgraph.sqlite --verbose
 
 The commands above are the compatibility path: one database, stdio transport,
 and legacy list-shaped query/neighbor JSON by default.
+
+Set `MINDGRAPH_DEVICE=cpu` to explicitly run model loading and inference on
+CPU, including ingestion and MCP daemon startup. Supported explicit values are
+`cpu`, `mps`, `cuda` and `cuda:N`. Unset the variable to retain the embedding
+library's default device selection. Invalid values and unavailable backends
+fail explicitly; there is no automatic retry on another device. Normal model
+loading remains cache-only.
 
 ### Optional shared daemon
 
@@ -437,6 +453,10 @@ safe to expose beyond the local machine. Process supervision, concurrency
 behavior under load, and RAM and latency figures are unmeasured.
 
 ### Tools
+
+For opt-in compact nominations and explicit `expand_nomination`, see
+[Stage 1 nominations](docs/STAGE1_NOMINATIONS.md). Legacy responses remain
+unchanged without the nomination flag.
 
 `query` runs the same retrieval path as `mindgraph query --json`. Parameters: `question`, `lexical_top_k`, `semantic_top_k`, `final_top_k`, `expand`, `expand_depth`, `expand_top_k`, `associate`, `associate_top_k`, `associate_seed_k`, `envelope`, and `graph_admission`. By default, the MCP response content is a JSON array of `QueryResult` records. With `envelope=true` (or CLI `--json --envelope`), it returns an object containing `schema_version`, `intent_resolution`, `routing`, and `results`; legacy list output remains unchanged when the flag is omitted. `graph_admission` defaults to false and requires `envelope=true`. When both are set, the envelope also includes `graph_admissions`: an empty list or one `GraphAdmission` over an already-produced depth-1 expanded row. The flag does not turn expansion on by itself. `routing` is single-database metadata for the bound index (not multi-index federation). In a smoke run against the example vault, the default list path matched the CLI JSON output exactly:
 

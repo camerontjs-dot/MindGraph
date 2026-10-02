@@ -1,0 +1,76 @@
+{
+  "schema": "mindgraph-candidate/v1",
+  "candidate_id": "mindgraph-producer-bound-stage1-20261002",
+  "product": "MindGraph",
+  "source_commit": "755c3d824f85947b4537dc6c41556e2808c3ae6b",
+  "source_tree": "1f9273618a35938eb01a4640dde4bb21816a33af",
+  "freeze_binding": "The separate metadata-only commit adding this manifest; exact head/tree recorded in the integration PR.",
+  "lifecycle_state": "frozen",
+  "advancement_readiness": "awaiting_fresh_combined_boundary_qualification",
+  "parents": [
+    {
+      "pull_request": 42,
+      "head": "9d64abb51d1884d7dd57c20a1f9f8d6f10a4d2d1",
+      "tree": "14e6f2d91a5451136b4b26b8b4add30630f46fad",
+      "bounded_gate": "https://github.com/camerontjs-dot/MindGraph/pull/42#issuecomment-5956803266"
+    },
+    {
+      "pull_request": 44,
+      "head": "8b68cc2f2ca63cfd5a4f37a2cf9dd217d974e1bb",
+      "tree": "078dc55b03f082bf6f30e138bc5c8482d85f2543",
+      "bounded_gate": "https://github.com/camerontjs-dot/MindGraph/pull/44#issuecomment-5958816853"
+    }
+  ],
+  "included_scope": [
+    "Combine the separately qualified unique-member producer identity and exact-preview Stage 1 lineages",
+    "Retain full v1 database identity in compact CLI and required shared-scope nominations, including zero rows",
+    "Validate selected producer-bound expansion and exp2 target on one read snapshot",
+    "Retain distinct caller alias, stored index, document trust and registration trust",
+    "Preserve legacy list, ordinary envelope, identity-only envelope and explicit unbound expansion"
+  ],
+  "excluded_scope": [
+    "Parallel producer candidate #45 qualification",
+    "Automatic expansion, selectors or fixed query budgets",
+    "Source truth, raw-file currentness, authentication or retrieval quality",
+    "MainFrame producer, installed database promotion or production daemon cutover",
+    "Conduit app/Context Compiler activation",
+    "Merge, tag or release"
+  ],
+  "evidence": {
+    "component": {
+      "classification": "implementation_owner_development",
+      "full_suite_passed": 476,
+      "focused_combined_tests_passed": 8,
+      "initial_precommit_test_apparatus_failures": 2
+    },
+    "repeat": {
+      "classification": "implementation_owner_development",
+      "full_repeat_passed": 473,
+      "cached_model_setup_errors": 3,
+      "separate_cached_model_process_repeat_passed": 3
+    },
+    "actual_store_boundary": {
+      "classification": "known_history_owner_replay",
+      "checks_passed": 142,
+      "checks_failed": 0,
+      "store_document_counts": {
+        "knowledge": 4075,
+        "projects": 699,
+        "operations": 90
+      },
+      "database_access": "SQLite online backups of actual installed/staged stores; originals unchanged",
+      "receipt_sha256": "7ebb2b5427160ddc1d9b7479b335c235b656c62f405919c663351ecde3124dc0",
+      "preserved_first_stop": "System interpreter lacked sqlite_vec before first query; downstream NOT_RUN"
+    },
+    "fresh_combined_qualification": {
+      "status": "NOT_RUN"
+    }
+  },
+  "non_claims": [
+    "Constituent gates do not transfer automatically to this combined source",
+    "Implementation-owner verification is not independent qualification",
+    "Preserved #36/#41, #39 and #37/#38 negative/inconclusive evidence remains unchanged",
+    "No automatic expansion or mandatory all-scope policy",
+    "Installed normal CLI, production MCP and native app availability remain separate gates"
+  ]
+}
