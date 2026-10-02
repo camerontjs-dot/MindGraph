@@ -13,6 +13,68 @@ Improve MindGraph as MainFrame's retrieval layer so it can surface the right con
 
 The next version should not turn retrieval into hidden prompt construction. MindGraph nominates potentially useful context. A consumer decides what to inspect or admit.
 
+## MainFrame lifecycle scopes and adaptive first contact
+
+MainFrame consumes MindGraph through three separate lifecycle indexes:
+
+| Scope alias | Corpus | Local DB | Trust profile |
+| --- | --- | --- | --- |
+| `knowledge` | `10_knowledge/` | `~/.mindgraph/mainframe.sqlite` | `durable_knowledge` |
+| `projects` | `30_projects/` | `~/.mindgraph/mainframe-projects.sqlite` | `project_status` |
+| `operations` | bounded coordination material in `40_operations/` | `~/.mindgraph/mainframe-operations.sqlite` | `operations_status` |
+
+These are distinct retrieval and trust zones. MainFrame owns corpus selection,
+stored index configuration, staging, promotion and daemon registration. The
+generic MindGraph engine supports explicitly configured named indexes; it
+should not hard-code MainFrame's lifecycle semantics. `20_live/` stays outside
+these corpora. Operations selection remains bounded by its producer manifest,
+with raw material, generated bulk, source/workbench trees, caches, archives,
+sealed material and excluded private data kept out of ordinary retrieval.
+
+For substantive MainFrame work, MindGraph is the normal first discovery
+surface. Start with one cheap query in the scope most likely to hold useful
+context, inspect compact nominations, then decide what deserves more context:
+
+`scoped first contact -> inspect nominations -> optionally expand -> optionally query another scope -> authoritative source`
+
+A project implementation or status question normally starts in `projects`;
+a standing-process question starts in `operations`; prior architecture or a
+durable lesson starts in `knowledge`. The task, first result, uncertainty and
+emerging questions guide additional queries. Cross-lifecycle work may warrant
+several deliberate scoped queries. A fixed number of queries is not a planning
+requirement, and ordinary retrieval needs no formal Query Pass document.
+
+**MindGraph first contact does not mean querying every index. Progressive
+retrieval does not mean automatic expansion.** An agent chooses useful
+expansions, other scopes and graph neighbors. Explicit expansion alone does
+not authorize a selector, fixed expansion budget or automatic policy.
+
+A Query Station may present several result groups, but each group retains
+its scope alias, stored index identity and trust profile. The engine does not
+gain a synthetic `both` or `all` scope. A missing requested operations index
+fails explicitly; a projects database is not a substitute.
+
+Retrieval and expansion supply context. Source files, owning repositories,
+live systems and project evidence remain authority. Inspect those sources
+before consequential mutable-state claims or changes. A project nomination
+does not outrank GitHub or the actual worktree; an operations nomination does
+not outrank its owning coordination files or external system. Conduit consumes
+and combines context sources where used without changing that boundary.
+
+Lean session bootstrap should load governing contracts and expose progressive
+routes, then let retrieval guide relevant source loading. Session entry should
+not query and dump all three databases, and MindGraph does not replace
+governing contracts or deep reconstruction when the task requires it.
+
+Preserve detailed retrieval receipts when retrieval is itself part of the
+engineering claim: evaluation, miss diagnosis, consequential prior-decision
+reconstruction, source-selection research or adaptive-workflow pressure tests.
+Use light observations to detect missed context, scope confusion, unavailable
+indexes, unnecessary expansion and first-contact overhead. If a defined class
+of work gains no useful orientation, preserve that observation and narrow the
+workflow through MainFrame's decision process. Do not turn telemetry into a
+mandatory report for every task.
+
 ## Current baseline
 
 The live standalone engine already provides:
@@ -154,6 +216,10 @@ Add an explicit two-stage operating model:
 This should allow a worker to receive, for example, several low-cost nominations and request full excerpts only for the few that appear consequential.
 
 Progressive retrieval is a context-efficiency mechanism, not an authority mechanism. Expansion does not strengthen the epistemic status of a result.
+
+MainFrame applies this model adaptively across its lifecycle scopes. An agent
+can proceed to source, expand a nomination, inspect graph neighbors or query
+another scope as needed. There is no universal expansion or multi-scope step.
 
 ## MainFrame-specific retrieval evaluation
 

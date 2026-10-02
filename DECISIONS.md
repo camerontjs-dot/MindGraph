@@ -4,6 +4,43 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Three MainFrame lifecycle indexes with adaptive discovery
+
+**Status:** Accepted planning direction from the operator; implementation and
+qualification remain separate decisions.
+
+**Decision:** Extend the maintained vNext plan with three distinct MainFrame
+retrieval scopes: knowledge, projects and operations. MainFrame owns their
+corpus selection, stored index configuration and installation. The generic
+engine supports named scopes without adopting MainFrame-specific lifecycle
+rules. `20_live/` remains outside these corpora.
+
+**Workflow:** Substantive MainFrame work starts with one relevant scoped
+MindGraph query. The agent scans nominations and decides whether expansion,
+graph neighbors, another scope or direct source inspection is useful. A
+cross-lifecycle task may justify several explicit queries; a second query is
+not required merely to satisfy procedure. Routine retrieval needs no formal
+Query Pass. Detailed receipts remain appropriate when retrieval matters to
+the claim or apparatus.
+
+**Authority and history:** Source files, repositories and live systems remain
+authority. Retrieval and expansion do not verify claims or create write
+authority. Preserve prior reranking non-replication, graph-admission receipts
+and nomination/selector research dispositions. Explicit expansion does not
+authorize automatic selection or an expansion budget.
+
+**Consequence:** Progressive session disclosure, compact nominations and
+adaptive discovery become one direction in the existing plan. No ranking,
+model, selector, database migration or release is authorized by this record.
+See [`docs/VNEXT_RETRIEVAL_PLAN.md`](docs/VNEXT_RETRIEVAL_PLAN.md).
+
+> **Binds:** MainFrame-specific vNext planning and consumer integration design
+> **Tier:** T0 (planning and ownership guidance)
+> **Check:** owner review of the plan and separate implementation receipts
+> **Escape:** preserve a miss or wasteful first-contact observation and narrow the workflow through MainFrame's decision process
+
+---
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.
