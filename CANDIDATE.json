@@ -1,70 +1,91 @@
 {
-  "advancement_readiness": "awaiting_independent_operations_authority_repair_qualification",
-  "blockers": [
-    "Independent exact-head cross-repository qualification remains required"
+  "schema": "mindgraph-candidate/v1",
+  "candidate_id": "mindgraph-producer-source-map-binding-20261002",
+  "product": "MindGraph",
+  "source_commit": "7f3297b029977c993f8bd99a00b9405b2c222f0a",
+  "source_tree": "681b38a271e9d26a154fb6ca693e3da119c06ce7",
+  "freeze_binding": "The separate commit updating this manifest; exact head/tree recorded in the successor PR.",
+  "lifecycle_state": "frozen",
+  "advancement_readiness": "awaiting_independent_operations_authority_successor_qualification",
+  "predecessor": {
+    "kind": "frozen_operations_authority_candidate",
+    "repository": "camerontjs-dot/MindGraph",
+    "pull_request": 36,
+    "head": "2ddf3ea1cb1471d95448670f02edd15b325d7c3a",
+    "tree": "e65399327f0d675a9306f7d5e77a443033f35328",
+    "preserved_disposition": "BLOCK_valid_wrong_source_map",
+    "receipt": "https://github.com/camerontjs-dot/Conduit/pull/112#issuecomment-5922312870"
+  },
+  "versions": {
+    "stored_identity": "mindgraph-index-identity/v1",
+    "query_envelope": "mindgraph-query-identity/v1"
+  },
+  "included_scope": [
+    "Independently recompute producer source-document map from stored document projection at bind and identity read",
+    "Preserve same-snapshot retrieval and all v1 wire fields",
+    "Add explicit optional embedding runtime device selection with unchanged default and no fallback"
   ],
-  "candidate_id": "mindgraph-operations-index-authority-20260930",
-  "dependencies": {},
+  "excluded_scope": [
+    "Stage 1 candidate extraction or selector/automatic expansion policy",
+    "MainFrame corpus membership, installed database promotion and daemon ownership",
+    "Conduit consumer source repair or final Context Compiler composition",
+    "Retrieval-quality or source-truth verification",
+    "Merge, tag, release"
+  ],
+  "dependencies": {
+    "producer_contract": "Canonical source projection matches MainFrame producer document_map_hash(include_record_type=False)",
+    "consumer_contract": "Unchanged v1 identity envelope and exact field set"
+  },
   "evidence": {
     "component": {
+      "classification": "implementation_owner_development",
+      "status": "passed",
       "checks": {
-        "engine_suite": {
+        "exact_source_full_suite": {
+          "passed": 402,
           "failed": 0,
-          "passed": 383,
-          "skipped": 0,
-          "trace": "mindgraph-full-development"
+          "skipped": 0
+        },
+        "loader_and_identity_focused": {
+          "passed": 41,
+          "failed": 0,
+          "skipped": 0
         }
-      },
-      "classification": "implementer_development",
-      "status": "completed_with_explicit_limitations"
+      }
     },
-    "fresh_acceptance": {
-      "status": "not_run"
+    "boundary_replay": {
+      "classification": "implementation_owner_development",
+      "status": "passed",
+      "boundaries": [
+        "real CLI identity/hit/no-hit/zero-budget",
+        "production-schema preserved producer DBs",
+        "owned three-scope Streamable HTTP MCP query/neighbor",
+        "post-start tampered source-map rejection",
+        "missing/wrong-index/tampered startup rejection",
+        "real CPU semantic ingestion and authored graph neighbor",
+        "unchanged Conduit consumer development replay reported separately"
+      ]
     },
     "independent_replay": {
       "status": "not_run"
+    },
+    "fresh_acceptance": {
+      "status": "not_run"
     }
   },
-  "excluded_scope": [
-    "Whole-workspace README prerequisite repair",
-    "Operator install/daemon/corpus promotion",
-    "Source verification or filesystem composition",
-    "Final Context Compiler/Supervisor composition",
-    "Retrieval quality/routing changes",
-    "Merge or release"
+  "blockers": [
+    "Independent exact-head successor qualification remains required"
   ],
   "external_concurrent_inputs": [
-    "Historical #110 BLOCK and #43 remain unchanged",
-    "Maintained Context Compiler and concurrent qualification worktrees remain separately owned"
+    "Frozen #36 BLOCK remains unchanged",
+    "Frozen #39 Stage 1 remains separate",
+    "Canonical dirty parser/test/tmp and existing worktrees remain separately owned"
   ],
-  "freeze_binding": "The commit adding this manifest; its exact full head/tree is recorded in the cross-repository GitHub handoff.",
-  "included_scope": [
-    "Generic producer declaration bound to complete stored document map",
-    "Opt-in CLI identity inspection/envelope and required shared-daemon scope identity",
-    "Single-snapshot identity and retrieval; legacy transport compatibility"
-  ],
-  "lifecycle_state": "frozen",
   "non_claims": [
     "Development evidence is not independent qualification",
-    "Live whole-workspace corpus readiness UNKNOWN",
-    "Operator-installed engine equivalence UNKNOWN",
-    "Local binding is not authentication against a malicious database writer",
-    "No source admission, expansion, delivery, merge or release authority"
-  ],
-  "predecessor": {
-    "head": "8df9ae7fccdb742558950ef9bdedb96cc74df6d0",
-    "kind": "maintained_main",
-    "repository": "camerontjs-dot/MindGraph",
-    "tree": "44111ff75c53a1862001b9d041944e81a2d1430a"
-  },
-  "product": "MindGraph",
-  "schema": "mindgraph-candidate/v1",
-  "source_commit": "3af092d575aa2315eb6dd5bffd47b5d60d5d0c24",
-  "source_tree": "e858ee6d604016355553f5a044b5486befe1d953",
-  "versions": {
-    "operations_index": "mainframe-operations",
-    "operations_trust": "operations_status",
-    "query_envelope": "mindgraph-query-identity/v1",
-    "stored_identity": "mindgraph-index-identity/v1"
-  }
+    "This binding is not authentication against a malicious writer replacing data and all bindings",
+    "Returned nominations and expansion do not establish source authority",
+    "Installed engine/database/client state requires separate exact runtime evidence",
+    "No merge, tag or release"
+  ]
 }
