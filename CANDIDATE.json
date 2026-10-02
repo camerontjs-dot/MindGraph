@@ -1,18 +1,23 @@
 {
   "schema": "mindgraph-candidate/v1",
-  "candidate_id": "mindgraph-producer-source-map-binding-20261002",
+  "candidate_id": "mindgraph-unique-producer-json-members-20261002",
   "product": "MindGraph",
-  "source_commit": "7f3297b029977c993f8bd99a00b9405b2c222f0a",
-  "source_tree": "681b38a271e9d26a154fb6ca693e3da119c06ce7",
-  "freeze_binding": "The separate commit updating this manifest; exact head/tree recorded in the successor PR.",
+  "source_commit": "89600676fee53ff8b571e6800149567fb26db982",
+  "source_tree": "4ee55322359b824e8389f9cee27242e66fe781fd",
+  "freeze_binding": "The separate metadata-only commit updating this manifest; exact head/tree recorded in the successor PR.",
   "lifecycle_state": "frozen",
-  "advancement_readiness": "awaiting_independent_operations_authority_successor_qualification",
+  "advancement_readiness": "awaiting_fresh_independent_identity_successor_qualification",
   "predecessor": {
-    "kind": "frozen_operations_authority_candidate",
     "repository": "camerontjs-dot/MindGraph",
+    "pull_request": 41,
+    "head": "d1d152cdd0df1b3637d23922009fcff15856dbe8",
+    "tree": "295d0b89efd52570f791896f919c7ddc779aafdc",
+    "preserved_disposition": "FAIL_BLOCK_duplicate_index_id_member_accepted",
+    "receipt": "https://github.com/camerontjs-dot/MindGraph/pull/41#issuecomment-5955758113"
+  },
+  "earlier_lineage": {
     "pull_request": 36,
     "head": "2ddf3ea1cb1471d95448670f02edd15b325d7c3a",
-    "tree": "e65399327f0d675a9306f7d5e77a443033f35328",
     "preserved_disposition": "BLOCK_valid_wrong_source_map",
     "receipt": "https://github.com/camerontjs-dot/Conduit/pull/112#issuecomment-5922312870"
   },
@@ -21,71 +26,54 @@
     "query_envelope": "mindgraph-query-identity/v1"
   },
   "included_scope": [
-    "Independently recompute producer source-document map from stored document projection at bind and identity read",
-    "Preserve same-snapshot retrieval and all v1 wire fields",
-    "Add explicit optional embedding runtime device selection with unchanged default and no fallback"
+    "Carry separately identified source-map binding and explicit device configuration predecessor",
+    "Decode producer declaration files, stored reads and existing-binding comparisons with unique JSON object members",
+    "Reject escaped-equivalent or repeated-identical duplicate member names without changing rejected records",
+    "Preserve all v1 wire fields, canonical map serialization and legacy transports"
   ],
   "excluded_scope": [
-    "Stage 1 candidate extraction or selector/automatic expansion policy",
-    "MainFrame corpus membership, installed database promotion and daemon ownership",
-    "Conduit consumer source repair or final Context Compiler composition",
-    "Retrieval-quality or source-truth verification",
+    "Stage 1 nomination/expansion candidate integration or automatic selector policy",
+    "MainFrame corpus selection, installed DB promotion or existing daemon cutover",
+    "Conduit source changes or Context Compiler composition",
+    "Source truth, retrieval quality or malicious-writer authentication",
     "Merge, tag, release"
   ],
-  "dependencies": {
-    "producer_contract": "Canonical source projection matches MainFrame producer document_map_hash(include_record_type=False)",
-    "consumer_contract": "Unchanged v1 identity envelope and exact field set"
-  },
   "evidence": {
     "component": {
       "classification": "implementation_owner_development",
-      "status": "passed",
-      "checks": {
-        "exact_source_full_suite": {
-          "passed": 402,
-          "failed": 0,
-          "skipped": 0
-        },
-        "loader_and_identity_focused": {
-          "passed": 41,
-          "failed": 0,
-          "skipped": 0
-        }
+      "focused_tests": {
+        "passed": 50,
+        "failed": 0,
+        "skipped": 0
+      },
+      "exact_source_full_suite": {
+        "passed": 411,
+        "failed": 0,
+        "skipped": 0
       }
     },
     "boundary_replay": {
       "classification": "implementation_owner_development",
       "status": "passed",
       "boundaries": [
-        "real CLI identity/hit/no-hit/zero-budget",
-        "production-schema preserved producer DBs",
-        "owned three-scope Streamable HTTP MCP query/neighbor",
-        "post-start tampered source-map rejection",
-        "missing/wrong-index/tampered startup rejection",
-        "real CPU semantic ingestion and authored graph neighbor",
-        "unchanged Conduit consumer development replay reported separately"
-      ]
+        "real CLI duplicate-member inspection/zero-result/startup rejection",
+        "unchanged preserved failed database read-only replay",
+        "production-schema archived producer DB copies",
+        "owned three-scope Streamable HTTP MCP query/graph-neighbor and legacy transport",
+        "post-start duplicate-member and source-map tamper rejection",
+        "missing/wrong-index startup rejection"
+      ],
+      "no_installed_state_mutation": true
     },
-    "independent_replay": {
-      "status": "not_run"
-    },
-    "fresh_acceptance": {
+    "fresh_independent_qualification": {
       "status": "not_run"
     }
   },
-  "blockers": [
-    "Independent exact-head successor qualification remains required"
-  ],
-  "external_concurrent_inputs": [
-    "Frozen #36 BLOCK remains unchanged",
-    "Frozen #39 Stage 1 remains separate",
-    "Canonical dirty parser/test/tmp and existing worktrees remain separately owned"
-  ],
   "non_claims": [
-    "Development evidence is not independent qualification",
-    "This binding is not authentication against a malicious writer replacing data and all bindings",
-    "Returned nominations and expansion do not establish source authority",
-    "Installed engine/database/client state requires separate exact runtime evidence",
+    "Frozen #41 FAIL and #36 BLOCK remain preserved",
+    "Implementation-owner replay is not independent qualification",
+    "Index binding does not establish source truth or authenticate a malicious authorized writer",
+    "Installed-state and consumer availability need their own exact runtime evidence",
     "No merge, tag or release"
   ]
 }
