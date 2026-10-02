@@ -4,6 +4,36 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Reject duplicate producer identity members
+
+**Status:** Separate repair successor; independent qualification pending.
+
+**Observed defect:** Fresh qualification of frozen PR #41 at
+`d1d152cdd0df1b3637d23922009fcff15856dbe8` stopped with `FAIL/BLOCK` when
+`index-identity` accepted two contradictory serialized `index_id` members.
+Python's ordinary JSON decoder selected the last member, which matched the
+stored documents. The failure and unrun downstream controls remain preserved.
+See the [frozen failure receipt](https://github.com/camerontjs-dot/MindGraph/pull/41#issuecomment-5955758113).
+
+**Decision:** Decode producer declarations and stored bindings with unique
+JSON object members. Reject duplicate names after escape decoding, including
+repeated identical values, before field, map or expected-index validation.
+Use the same decoder for initial binding input, identity reads and attempted
+binding replacement. A rejected stored record remains unchanged.
+
+**Compatibility and limits:** The v1 wire keys, canonical map serialization,
+valid producer declarations, explicit scope aliases and legacy transports
+remain unchanged. This removes an ambiguous representation; it does not
+authenticate the producer or establish source truth. PR #41 stays frozen and
+its failure remains separate from this successor's evidence.
+
+> **Binds:** v1 producer declaration and stored-binding JSON decoding
+> **Tier:** T2 (duplicate-member declarations and reads blocked)
+> **Check:** `tests/test_index_identity.py`; real CLI and shared-MCP controls
+> **Escape:** preserve the rejected record and stage an explicit unique-member declaration
+
+---
+
 ## 2026-10-02 — Explicit embedding device for local runtime recovery
 
 **Status:** Additive runtime configuration; separate from source-map repair.

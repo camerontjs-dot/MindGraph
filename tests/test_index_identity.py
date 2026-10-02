@@ -197,6 +197,60 @@ def test_legacy_array_and_intent_envelope_remain_compatible(tmp_path):
     assert runner.invoke(app, base + ["--envelope", "--identity-envelope"]).exit_code != 0
 
 
+@pytest.mark.parametrize("member, repeated_value", [
+    ("index_id", "contradictory-index"),
+    ("trust_profile", "contradictory-trust"),
+    ("document_count", -1),
+    ("source_document_map_sha256", "0" * 64),
+    ("index_id", "mainframe-operations"),
+    ("\\u0069ndex_id", "contradictory-index"),
+])
+def test_duplicate_stored_members_fail_reads_startup_and_rebinding(tmp_path, member, repeated_value, caplog):
+    path, identity = produce(tmp_path)
+    raw = '{"' + member + '":' + json.dumps(repeated_value) + ',' + json.dumps(identity)[1:]
+    conn = db.get_db(str(path))
+    with conn:
+        conn.execute("UPDATE index_meta SET value = ? WHERE key = 'index_identity'", (raw,))
+    conn.close()
+    for args in [
+        ["index-identity", "--db", str(path)],
+        ["query", "compass", "--db", str(path), "--lexical-only", "--json", "--no-intent", "--identity-envelope"],
+        ["query", "zzmissingdevelopmentidentity", "--db", str(path), "--lexical-only", "--json", "--no-intent", "--identity-envelope", "--top-k", "0"],
+        ["serve-daemon", "--scope", f"operations:operations_status={path}",
+         "--require-scope-identity", "operations=mainframe-operations:40_operations"],
+        ["bind-index", "--db", str(path), "--identity-file", str(tmp_path / "operations-identity.json")],
+    ]:
+        caplog.clear()
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0, result.output
+        assert "duplicate producer identity member" in result.output or "duplicate producer identity member" in caplog.text
+    conn = db.get_db(str(path), read_only=True)
+    assert conn.execute("SELECT value FROM index_meta WHERE key = 'index_identity'").fetchone()[0] == raw
+    conn.close()
+
+
+@pytest.mark.parametrize("member, repeated_value", [
+    ("index_id", "contradictory-index"),
+    ("index_id", "mainframe-operations"),
+    ("\\u0069ndex_id", "contradictory-index"),
+])
+def test_duplicate_declaration_members_cannot_stamp_unbound_database(tmp_path, member, repeated_value):
+    path, _ = produce(tmp_path)
+    conn = db.get_db(str(path))
+    with conn:
+        conn.execute("DELETE FROM index_meta WHERE key = 'index_identity'")
+    conn.close()
+    declaration_file = tmp_path / "operations-identity.json"
+    raw = '{"' + member + '":' + json.dumps(repeated_value) + ',' + declaration_file.read_text()[1:]
+    declaration_file.write_text(raw)
+    result = runner.invoke(app, ["bind-index", "--db", str(path), "--identity-file", str(declaration_file)])
+    assert result.exit_code != 0
+    assert "duplicate producer identity member" in result.output
+    conn = db.get_db(str(path), read_only=True)
+    assert conn.execute("SELECT COUNT(*) FROM index_meta WHERE key = 'index_identity'").fetchone()[0] == 0
+    conn.close()
+
+
 def test_identity_and_query_share_one_read_snapshot(tmp_path):
     from mindgraph import query as query_mod
     path, bound = produce(tmp_path)

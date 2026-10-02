@@ -6,6 +6,12 @@ never derive it from filenames, caller aliases or returned documents.
 
 The producer passes a JSON declaration to `bind-index --db DB --identity-file FILE`:
 
+Declaration and stored-binding objects require unique JSON member names.
+Repeated members, including equivalent escaped names or repeated identical
+values, are rejected before identity validation. The engine never chooses the
+first or last conflicting declaration. Reads and attempted rebinding preserve
+the rejected stored bytes.
+
 ```json
 {
   "schema_version": "mindgraph-index-identity/v1",
@@ -24,7 +30,8 @@ The engine validates all stored document index/trust/path provenance, adds
 writer transaction. A different or stale existing binding is rejected.
 The canonical database map includes each document's id, index, trust, namespace,
 source root/path, display path, stored path and content hash, sorted by id, encoded
-as compact sorted-key JSON. No query result is used to establish this binding.
+as compact sorted-key JSON with Python's default ASCII escaping, then UTF-8
+bytes. No query result is used to establish this binding.
 
 The source-document map uses the same stored fields except `path`, ordered by
 `(namespace, source_path)` and encoded as compact sorted-key UTF-8 JSON.

@@ -35,6 +35,23 @@ def _sha(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
+def _unique_members(pairs):
+    identity = {}
+    for key, value in pairs:
+        if key in identity:
+            _fail("duplicate producer identity member")
+        identity[key] = value
+    return identity
+
+
+def parse_identity_json(payload):
+    """Decode an unambiguous producer declaration or persisted binding."""
+    try:
+        return json.loads(payload, object_pairs_hook=_unique_members)
+    except (ValueError, TypeError):
+        _fail("malformed producer binding")
+
+
 def _validate_fields(identity, *, binding):
     fields = BINDING_FIELDS if binding else DECLARATION_FIELDS
     if not isinstance(identity, dict) or set(identity) != fields:
@@ -116,10 +133,7 @@ def read_identity(conn, *, expected=None):
         _fail(f"binding unreadable ({exc})")
     if row is None:
         _fail("producer binding missing; stage an explicitly identified corpus")
-    try:
-        identity = json.loads(row[0])
-    except (ValueError, TypeError):
-        _fail("malformed producer binding")
+    identity = parse_identity_json(row[0])
     _validate_fields(identity, binding=True)
     for field, value in (expected or {}).items():
         if identity.get(field) != value:
@@ -146,7 +160,7 @@ def bind_identity(conn, declaration):
         encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         old = conn.execute("SELECT value FROM index_meta WHERE key = ?", (KEY,)).fetchone()
         if old is not None:
-            if json.loads(old[0]) != identity:
+            if parse_identity_json(old[0]) != identity:
                 _fail("existing binding differs; rebuild a fresh staged database")
         if declaration["source_document_map_sha256"] != _source_map_hash(rows):
             _fail("producer source document map differs from stored documents")
