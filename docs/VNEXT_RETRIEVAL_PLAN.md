@@ -194,6 +194,13 @@ Expose the canonical nomination as structured output through the CLI/MCP boundar
 
 The first response should be compact enough that an agent can scan several nominations cheaply and choose which ones to expand.
 
+Compactness is a projection contract, not a guarantee that the complete serialized
+response is smaller. Producer identity, source coordinates, provenance and expansion
+handles contribute overhead. Measure the bytes and destination tokens actually
+delivered by the client, together with selected expansions, before claiming a net
+context saving. A projection can reduce excerpt text while carrying more protocol
+metadata.
+
 The agent-facing surface should preserve:
 
 - typed authority/provenance;
@@ -258,6 +265,7 @@ Primary retrieval metrics:
 Context-efficiency metrics:
 
 - tokens surfaced per successful query;
+- complete response bytes and destination-token estimates, separating excerpt text from locator, identity and provenance overhead;
 - tokens expanded per successful query;
 - percentage of nominations expanded by an agent or human;
 - nomination selection precision/recall: whether a consumer chooses the right items to expand from the compact projection;
@@ -297,6 +305,10 @@ Implement the canonical result contract and compact human/agent projections with
 The promoted `GraphAdmission` object is the first production-shaped typed nomination, but it is deliberately only a graph-derived sidecar. The broader contract for ordinary lexical/semantic/fused nominations and explicit expansion handles remains open.
 
 Measure whether compact nominations let consumers choose useful expansions without materially reducing required-context recall.
+
+Contract qualification and cost/relevance qualification are separate. A passing
+finite identity/expansion gate or the absence of full excerpt arrays does not by
+itself establish a default client context saving.
 
 ### Stage 2: improve representation before training — not yet run
 
