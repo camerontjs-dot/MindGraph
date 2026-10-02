@@ -1,0 +1,83 @@
+{
+  "schema": "mindgraph-candidate/v1",
+  "candidate_id": "mindgraph-stage1-exact-preview-successor-20261002",
+  "product": "MindGraph",
+  "source_commit": "10cc91692c765aa7249fbe74aa41dfb9daa18a6f",
+  "source_tree": "1e0275c7c20786cbcd281c31d5abb0369daf551d",
+  "freeze_binding": "The separate metadata-only commit adding this manifest; exact head/tree recorded in the successor PR.",
+  "lifecycle_state": "frozen",
+  "advancement_readiness": "awaiting_fresh_independent_stage1_successor_qualification",
+  "predecessor": {
+    "repository": "camerontjs-dot/MindGraph",
+    "pull_request": 39,
+    "head": "af0ee2cdb412c2438785bd6ae92aff03c53bfca2",
+    "tree": "e006899212aa3a0d63555c7dc9b7a63fdffa681b",
+    "preserved_disposition": "FAIL_STAGE1_exact_preview_extract",
+    "receipt": "https://github.com/camerontjs-dot/MindGraph/pull/39#issuecomment-5956598133"
+  },
+  "earlier_lineage": {
+    "parent_issue": 21,
+    "preserved_predecessor_pull_request": 37,
+    "preserved_inconclusive_issue": 38,
+    "selector_research_issues": [
+      33,
+      34,
+      35
+    ]
+  },
+  "included_scope": [
+    "Carry separately preserved maintained Stage1 nom1/exp2 lineage",
+    "Preserve up to 280 exact flattened source characters without added ellipsis",
+    "Retain preview_truncated and preview_chars as explicit omission/length fields",
+    "Update length-boundary and real CLI/MCP regression assertions",
+    "Explicitly pass source-bound test environment to stdio child processes"
+  ],
+  "excluded_scope": [
+    "Producer source-map/unique-JSON/device candidate integration",
+    "Selector or automatic expansion policy",
+    "MainFrame corpus selection, installed DB promotion or daemon cutover",
+    "Conduit consumption or Context Compiler composition",
+    "Source truth, raw-file freshness, retrieval quality, authentication",
+    "Merge, tag, release"
+  ],
+  "evidence": {
+    "component": {
+      "classification": "implementation_owner_development",
+      "focused_tests": {
+        "passed": 57,
+        "failed": 0,
+        "skipped": 0
+      },
+      "source_full_suite": {
+        "passed": 425,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    "runtime": {
+      "hardware": "Explicit CPU adapter to genuine cached SentenceTransformer for owner tests; engine default remains unchanged",
+      "boundaries": [
+        "real CLI",
+        "single stdio MCP",
+        "private shared HTTP MCP through stdio proxy"
+      ],
+      "child_import_binding": "source import guard in private hardware adapter; source environment explicitly supplied to stdio processes"
+    },
+    "preserved_initial_owner_failure": {
+      "passed": 56,
+      "failed": 1,
+      "classification": "runtime_apparatus_mismatch",
+      "observation": "MCP stdio inherited-environment filtering omitted PYTHONPATH; observed catalog lacked Stage1; not an established candidate defect"
+    },
+    "fresh_independent_qualification": {
+      "status": "not_run"
+    }
+  },
+  "non_claims": [
+    "Frozen #39 FAIL and #37/#38 predecessor histories remain preserved",
+    "Implementation-owner checks do not establish independent qualification",
+    "Preview extraction adds no source authority",
+    "No automatic expansion or selector decision",
+    "No merge, installed promotion, tag or release"
+  ]
+}
