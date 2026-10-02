@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from mindgraph import daemon, db, embedders, idle_lifecycle, parser
+from mindgraph import daemon, db, embedders, idle_lifecycle, parser, index_identity
 from mindgraph import graph_admission
 from mindgraph import query as query_mod
 from mindgraph.exceptions import EmbeddingError, IngestionError, MindgraphError
@@ -796,6 +796,45 @@ def _format_neighbor_block(idx: int, neighbor) -> str:
     )
 
 
+@app.command("bind-index")
+def bind_index(
+    identity_file: Path = typer.Option(..., "--identity-file"),
+    db_path: str = typer.Option("mindgraph.sqlite", "--db"),
+):
+    """Bind an explicit producer declaration to an existing staged index."""
+    conn = None
+    try:
+        if not Path(db_path).is_file():
+            raise MindgraphError("Cannot bind a missing database")
+        declaration = json.loads(identity_file.read_text(encoding="utf-8"))
+        conn = db.get_db(db_path)
+        db.validate_query_schema(conn, db_path)
+        typer.echo(json.dumps(index_identity.bind_identity(conn, declaration), indent=2))
+    except (MindgraphError, OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.command("index-identity")
+def inspect_index_identity(db_path: str = typer.Option("mindgraph.sqlite", "--db")):
+    """Read and validate stored database authority; never infer or backfill it."""
+    conn = None
+    try:
+        conn = db.get_db(db_path, read_only=True)
+        db.validate_query_schema(conn, db_path)
+        with index_identity.read_snapshot(conn):
+            typer.echo(json.dumps(index_identity.read_identity(conn), indent=2))
+    except MindgraphError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @app.command()
 def query(
     question: str = typer.Argument(..., help="The free-text query."),
@@ -870,6 +909,10 @@ def query(
         "--envelope",
         help="With --json, emit intent metadata plus results instead of the legacy result list.",
     ),
+    identity_envelope: bool = typer.Option(
+        False, "--identity-envelope",
+        help="With --json, require producer-bound database identity and emit the v1 identity envelope.",
+    ),
     graph_admission_flag: bool = typer.Option(
         False,
         "--graph-admission",
@@ -911,6 +954,9 @@ def query(
             err=True,
         )
         raise typer.Exit(code=1)
+    if identity_envelope and (not as_json or envelope):
+        typer.echo("error: --identity-envelope requires --json and cannot use --envelope", err=True)
+        raise typer.Exit(code=1)
     _configure_logging(verbose)
     try:
         conn = db.get_db(db_path, read_only=True)
@@ -922,6 +968,10 @@ def query(
 
     try:
         try:
+            database_identity = None
+            if identity_envelope:
+                conn.execute("BEGIN")
+                database_identity = index_identity.read_identity(conn)
             if lexical_only and associate:
                 raise EmbeddingError(
                     "--associate requires semantic retrieval; remove --lexical-only"
@@ -986,7 +1036,9 @@ def query(
                         pass
 
         if as_json:
-            if envelope:
+            if identity_envelope:
+                out = index_identity.query_envelope(database_identity, results)
+            elif envelope:
                 # Match MCP envelope shape so CLI and tool callers share one parser.
                 if resolution is not None:
                     resolution_payload = resolution.as_transport_payload()
@@ -1182,11 +1234,25 @@ def parse_scope_specs(values: list[str] | None) -> dict[str, tuple[str, str]]:
     return scopes
 
 
+def parse_scope_identity_specs(values, requested):
+    """Expected values constrain stored authority; they never create it."""
+    required = {}
+    for raw in values or []:
+        name, sep, value = raw.partition("=")
+        index_id, colon, lifecycle_root = value.partition(":")
+        if not sep or not colon or not index_id or not lifecycle_root or name not in requested or name in required:
+            raise MindgraphError("invalid --require-scope-identity; use configured NAME=INDEX_ID:LIFECYCLE_ROOT once")
+        required[name] = {"retrieval_scope": name, "index_id": index_id,
+                          "trust_profile": requested[name][1], "lifecycle_root": lifecycle_root}
+    return required
+
+
 @app.command("serve-daemon")
 def serve_daemon(
     knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
     projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
     scope: list[str] = typer.Option(None, "--scope", help=SCOPE_SPEC_HELP),
+    require_scope_identity: list[str] = typer.Option(None, "--require-scope-identity"),
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port"),
     path: str = typer.Option("/mcp", "--path"),
@@ -1202,10 +1268,14 @@ def serve_daemon(
             "knowledge": (knowledge_db, "durable_knowledge"),
             "projects": (projects_db, "project_status"),
         }
+        required = parse_scope_identity_specs(require_scope_identity, requested)
         scopes = {}
         for name, (db_path, trust_profile) in requested.items():
             conn = mcp_server.open_database_readonly(db_path)
             conns.append(conn)
+            if name in required:
+                with index_identity.read_snapshot(conn):
+                    index_identity.read_identity(conn, expected=required[name])
             scopes[name] = (conn, trust_profile)
         spec = embedders.resolve_embedder(embedder)
         lifecycle = (
@@ -1215,7 +1285,7 @@ def serve_daemon(
         server = mcp_server.create_shared_server(
             scopes,
             _load_embedder(spec.key), host=host, port=port, path=path,
-            embedder_spec=spec, lifecycle=lifecycle,
+            embedder_spec=spec, lifecycle=lifecycle, required_identities=required,
         )
         if lifecycle:
             lifecycle.start()
@@ -1272,13 +1342,18 @@ def daemon_start(
     knowledge_db: str = typer.Option("~/.mindgraph/mainframe.sqlite", "--knowledge-db"),
     projects_db: str = typer.Option("~/.mindgraph/mainframe-projects.sqlite", "--projects-db"),
     scope: list[str] = typer.Option(None, "--scope", help=SCOPE_SPEC_HELP),
+    require_scope_identity: list[str] = typer.Option(None, "--require-scope-identity"),
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port"),
     path: str = typer.Option("/mcp", "--path"),
     idle_seconds: float | None = typer.Option(None, "--idle-seconds", min=60.0),
 ):
     try:
-        parse_scope_specs(scope)
+        requested = parse_scope_specs(scope) or {
+            "knowledge": (knowledge_db, "durable_knowledge"),
+            "projects": (projects_db, "project_status"),
+        }
+        parse_scope_identity_specs(require_scope_identity, requested)
     except MindgraphError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)
@@ -1292,6 +1367,8 @@ def daemon_start(
                         "--projects-db", projects_db])
     if idle_seconds is not None:
         command.extend(["--idle-seconds", str(idle_seconds)])
+    for identity_spec in require_scope_identity or []:
+        command.extend(["--require-scope-identity", identity_spec])
     health_endpoint = daemon.health_url(host, port)
     typer.echo(json.dumps(daemon.start(state_dir, command, health_url=health_endpoint)))
 

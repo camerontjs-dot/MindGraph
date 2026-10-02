@@ -4,6 +4,62 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Check the producer's source-map projection independently
+
+**Status:** Bounded successor implementation; independent qualification pending.
+
+**Observed defect:** The frozen Conduit #112 / MindGraph #36 pair accepted a
+genuine projects source-map hash substituted into the operations declaration.
+The separate stored database-map hash still matched, so shape validation alone
+let an unrelated source declaration pass even when retrieval returned no rows.
+Those frozen candidates and their BLOCK receipts remain unchanged.
+
+**Decision:** Reconstruct the producer's eight-field source-map projection from
+the complete database document map and compare its hash at bind and every
+identity read. Sort by namespace/source path and exclude only the redundant
+stored `path`, matching the producer's directly checked source projection. Keep
+the v1 fields, envelope, transactions and legacy compatibility unchanged.
+
+**Evidence and limits:** Real CLI, SQLite producer, private HTTP and native Core
+controls exercise the mismatch before nomination admission, including no hits
+and a zero result budget. These are implementation-owner observations. No
+installed database, shared daemon or promotion gate is changed. This does not
+authenticate a malicious writer who can replace data and its binding, establish
+current policy, or verify source claims.
+
+## 2026-09-30 — Producer-bound database identity for empty nominations
+
+**Status:** Successor design; independent cross-repository qualification pending.
+
+**Observed defect:** Conduit #110 accepted a zero-row query against a projects
+database and an unidentified empty index. Document provenance cannot establish
+the identity of the selected database when no document is returned.
+
+**Decision:** Add the opt-in `mindgraph-index-identity/v1` stored binding and
+`mindgraph-query-identity/v1` query envelope. The corpus producer supplies the
+index, trust, lifecycle, manifest and validated source-map authority. MindGraph
+binds that declaration to the stored document map and reads it from the same
+SQLite snapshot as retrieval. It never invents identity from a scope or filename.
+The consumer compares explicit identity and retains its returned-row checks.
+
+**Ownership and compatibility:** MainFrame selects, validates, stages and
+promotes its corpus. MindGraph stores and transports the generic binding.
+Conduit consumes nominations. Legacy CLI arrays, intent envelopes and the
+default knowledge/projects daemon remain compatible. An explicitly configured
+scope can require a stored identity at startup and on each request.
+
+**Alternatives:** Rejecting every empty query loses legitimate no-hit results.
+Caller labels and filenames leave the defect intact. An external receipt alone
+does not bind the database used by the query. A stored binding plus a validated
+document-map hash carries the authority across database copies and rejects a
+stale binding after document changes.
+
+**Limits:** This is local producer authority, not a signature against a malicious
+database writer, source verification, freshness proof or retrieval-quality claim.
+Reconsider if that threat model is required. Rebuild and stage legacy databases;
+do not infer or silently backfill identity on query. See
+[`docs/index-identity-v1.md`](docs/index-identity-v1.md).
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.
