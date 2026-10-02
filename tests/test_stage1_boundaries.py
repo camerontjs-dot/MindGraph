@@ -187,7 +187,9 @@ def nominations_match(payload, rows, scope):
         if row["signal"] == "semantic" and row["weak_fit"]:
             expected_reasons["semantic"].append("weak_fit")
         assert nomination["retrieval_reasons"] == expected_reasons[row["signal"]]
-        assert nomination["preview"] == TEXT[:277] + "..."
+        assert nomination["preview"] == TEXT[:280]
+        assert nomination["preview_chars"] == 280
+        assert nomination["preview_truncated"] is True
         identity = dict(policy_version="nom1", query_sha256=hashlib.sha256(QUERY.encode()).hexdigest(),
                         scope_index=scope, doc_id=row["doc_id"], content_hash=row["content_hash"],
                         chunk_index=row["chunk_index"], signal=row["signal"], path=row["path"])
@@ -219,7 +221,8 @@ def exact_expansion(payload):
 async def session_for(probe, label, args):
     with (probe.receipts / (label + ".stderr")).open("w") as log:
         params = StdioServerParameters(command=sys.executable,
-                                      args=COMMAND[1:] + list(map(str, args)))
+                                      args=COMMAND[1:] + list(map(str, args)),
+                                      env=dict(os.environ))
         async with stdio_client(params, errlog=log) as (read, write):
             async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=60)) as session:
                 await session.initialize()

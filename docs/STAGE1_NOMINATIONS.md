@@ -16,6 +16,8 @@ with `--scope ALIAS`. The alias is separate from the stored `index_id`.
 Compact mode omits the full `results` and `not_citable` arrays and all
 `chunk_text` fields. Citation counts are integers, not source rows. Previews
 are exact extracts, flattened and capped at 280 characters, not summaries.
+`preview_truncated` reports omitted text; the preview adds no ellipsis or other
+characters absent from the stored extract.
 Short chunks may fit entirely in the preview. Order, source coordinates,
 provenance, citation authority and retrieval reasons survive projection.
 Nomination identity is deterministic; freshness stays `UNKNOWN` and source

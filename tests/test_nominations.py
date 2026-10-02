@@ -220,12 +220,27 @@ def test_preview_is_exact_extract_within_budget():
     assert nom.preview_chars == len(nom.preview)
     assert "chunk_text" not in nom.model_dump()
     flat = long_text.strip().replace("\n", " ")
-    assert nom.preview == flat[: PREVIEW_CHARS - 3] + "..."
+    assert nom.preview == flat[:PREVIEW_CHARS]
     short = project_nominations(
         [_row("d1", "d1.md", "hash-d1", chunk_text="tiny")], query_text="q"
     )[0]
     assert short.preview == "tiny"
     assert short.preview_truncated is False
+
+
+@pytest.mark.parametrize("length", [279, 280, 281, 720])
+def test_preview_preserves_source_characters_at_budget_boundary(length):
+    source = ("éλ0123456789 " * 60)[:length]
+    chunk = "  \n" + source[:100] + "\n" + source[101:] + "\n  "
+    flattened = chunk.strip().replace("\n", " ")
+    (nom,) = project_nominations(
+        [_row("d1", "d1.md", "hash-d1", chunk_text=chunk)], query_text="q"
+    )
+    assert nom.preview == flattened[:280]
+    assert nom.preview_chars == min(len(flattened), 280)
+    assert nom.preview_truncated is (len(flattened) > 280)
+    assert nom.preview in flattened
+    assert "..." not in nom.preview
 
 
 def test_expansion_resolves_to_intended_source(tmp_path):

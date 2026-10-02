@@ -4,6 +4,45 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Preserve exact source characters in compact previews
+
+**Status:** Accepted for this isolated successor; qualification and promotion
+remain separate decisions.
+
+**Context:** Fresh qualification of frozen PR #39 found a compact preview
+that replaced source characters with an added ellipsis. The stored chunk had
+no ellipsis. Preserve the [failed qualification](https://github.com/camerontjs-dot/MindGraph/pull/39#issuecomment-5956598133)
+on `af0ee2cdb412c2438785bd6ae92aff03c53bfca2`; the selected-expansion and
+MCP qualification cases were not run after that first failure.
+
+**Decision:** Take at most 280 characters from the flattened stored chunk,
+without adding text. The existing `preview_truncated` flag reports omitted
+source characters, and `preview_chars` reports the returned length. This
+narrows the implementation of the 2026-09-30 exact-preview decision; it does
+not replace its index-binding or explicit-expansion contract.
+
+**Consequences:** Long previews retain the source characters at positions
+277–279. Nomination identity, ordering, provenance, expansion handles and
+legacy responses retain their contracts. Regression tests compare the
+preview with stored source text at the budget boundary and through the real
+CLI, stdio MCP and shared-MCP routes.
+
+**Alternatives:** Describing an added ellipsis as an exact extract would
+weaken the documented source relationship. Changing the compact schema or
+introducing an expansion policy is unnecessary for this defect.
+
+**Non-claims:** The successor does not establish source truth, current raw
+bytes, retrieval quality, selector policy, installed promotion or release.
+PR #37 and issue #38 retain their historical dispositions.
+
+> **Binds:** Stage 1 compact-preview projection
+> **Tier:** T1 (detected)
+> **Check:** `tests/test_nominations.py` and `tests/test_stage1_boundaries.py`
+> **Escape:** preserve a failed candidate and repair in a separately identified
+> successor; do not promote a preview that fails the exact-extract contract
+
+---
+
 ## 2026-09-30 — Maintained Stage 1 nominations and index-bound expansion
 
 **Status:** Accepted for this isolated candidate; pending promotion review.

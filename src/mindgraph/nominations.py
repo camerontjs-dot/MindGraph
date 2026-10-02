@@ -18,7 +18,6 @@ from mindgraph import expansion_binding as binding
 POLICY_VERSION = "nom1"
 EXPANSION_VERSION = binding.VERSION
 PREVIEW_CHARS = 280
-PREVIEW_ELLIPSIS = "..."
 
 
 class NominationError(MindgraphError):
@@ -33,7 +32,7 @@ def measured_chunk_tokens(text: str) -> int:
 def preview_text(chunk_text: str, limit: int = PREVIEW_CHARS) -> tuple[str, bool]:
     flat = (chunk_text or "").strip().replace("\n", " ")
     if len(flat) > limit:
-        return flat[: max(0, limit - len(PREVIEW_ELLIPSIS))] + PREVIEW_ELLIPSIS, True
+        return flat[: max(0, limit)], True
     return flat, False
 
 
