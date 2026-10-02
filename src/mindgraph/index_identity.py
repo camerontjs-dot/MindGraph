@@ -31,6 +31,22 @@ def _fail(detail):
     raise DatabaseError(f"Index identity unavailable or incompatible: {detail}")
 
 
+def decode_identity_json(payload):
+    """Reject ambiguous object members before interpreting producer identity."""
+    def unique_members(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate producer identity member: {key}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(payload, object_pairs_hook=unique_members)
+    except (ValueError, TypeError) as exc:
+        _fail(f"malformed producer binding ({exc})")
+
+
 def _sha(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
@@ -126,10 +142,7 @@ def read_identity(conn, *, expected=None):
         _fail(f"binding unreadable ({exc})")
     if row is None:
         _fail("producer binding missing; stage an explicitly identified corpus")
-    try:
-        identity = json.loads(row[0])
-    except (ValueError, TypeError):
-        _fail("malformed producer binding")
+    identity = decode_identity_json(row[0])
     _validate_fields(identity, binding=True)
     for field, value in (expected or {}).items():
         if identity.get(field) != value:
@@ -156,7 +169,7 @@ def bind_identity(conn, declaration):
         encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         old = conn.execute("SELECT value FROM index_meta WHERE key = ?", (KEY,)).fetchone()
         if old is not None:
-            if json.loads(old[0]) != identity:
+            if decode_identity_json(old[0]) != identity:
                 _fail("existing binding differs; rebuild a fresh staged database")
         else:
             conn.execute("INSERT INTO index_meta (key, value) VALUES (?, ?)", (KEY, encoded))

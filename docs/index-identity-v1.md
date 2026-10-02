@@ -72,3 +72,7 @@ Database identity authorizes index selection. It does not verify a source, make
 a citation admissible, establish freshness, enter a ContextSet, expand files,
 deliver context or grant write authority. The hash detects stale or substituted
 document maps; it is not authentication against a malicious authorized writer.
+
+Producer declaration files and stored identity JSON must have unique decoded
+object members. Repeated identical values and escaped-equivalent names are also
+rejected. The decoder never selects a convenient first or last value.

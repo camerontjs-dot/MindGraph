@@ -4,6 +4,31 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+
+## 2026-10-02 — Reject ambiguous producer JSON members
+
+**Status:** Separate implementation successor; independent qualification pending.
+
+**Observed defect:** The frozen vNext source-map candidate accepted contradictory
+serialized identity members during inspection and a zero-result query. Python
+selected the last value; the native consumer selected the first. The original
+source-map repair and this separately observed failure remain preserved.
+
+**Decision:** Decode declaration files, stored reads and existing-binding
+comparisons with unique object members. Reject repeated names after escape
+decoding, including repeated identical values, before validating fields or maps.
+Rejected stored bytes remain unchanged; a fresh explicit producer declaration
+is required to rebuild the corpus.
+
+**Limits:** Valid v1 fields, canonical map hashing and legacy transports remain
+unchanged. This removes ambiguous representation without authenticating a writer
+or establishing source truth, current decisions or execution authority.
+
+> **Binds:** v1 producer declaration and stored-binding JSON decoding
+> **Tier:** T2 (ambiguous JSON rejected)
+> **Check:** `tests/test_index_identity.py`; real CLI controls
+> **Escape:** preserve the rejected record and stage a unique-member declaration
+
 ## 2026-10-02 — Check the producer's source-map projection independently
 
 **Status:** Bounded successor implementation; independent qualification pending.

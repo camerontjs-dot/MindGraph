@@ -208,3 +208,58 @@ def test_identity_and_query_share_one_read_snapshot(tmp_path):
     finally:
         reader.close()
         writer.close()
+
+
+@pytest.mark.parametrize("member,value", [
+    ("index_id", "contradictory-index"),
+    (r"\u0069ndex_id", "contradictory-index"),
+    ("index_id", "mainframe-operations"),
+    ("document_count", -1),
+    ("source_document_map_sha256", "0" * 64),
+])
+@pytest.mark.parametrize("order", ["first", "last"])
+def test_duplicate_stored_members_fail_reads_queries_and_rebinding(tmp_path, member, value, order, caplog):
+    path, identity = produce(tmp_path)
+    encoded = json.dumps(identity)
+    duplicate = '"' + member + '":' + json.dumps(value)
+    raw = '{' + duplicate + ',' + encoded[1:] if order == "first" else encoded[:-1] + ',' + duplicate + '}'
+    conn = db.get_db(str(path))
+    with conn:
+        conn.execute("UPDATE index_meta SET value=? WHERE key='index_identity'", (raw,))
+    conn.close()
+    before = path.read_bytes()
+    for args in [
+        ["index-identity", "--db", str(path)],
+        ["query", "compass", "--db", str(path), "--lexical-only", "--json", "--no-intent", "--identity-envelope"],
+        ["query", "zzmissingdevelopmentidentity", "--db", str(path), "--lexical-only", "--json", "--no-intent", "--identity-envelope", "--top-k", "0"],
+        ["bind-index", "--db", str(path), "--identity-file", str(tmp_path / "operations-identity.json")],
+    ]:
+        caplog.clear()
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0, result.output
+        assert "duplicate producer identity member" in result.output or "duplicate producer identity member" in caplog.text
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("member,value", [
+    ("index_id", "contradictory-index"),
+    (r"\u0069ndex_id", "contradictory-index"),
+    ("index_id", "mainframe-operations"),
+])
+@pytest.mark.parametrize("order", ["first", "last"])
+def test_duplicate_declaration_members_cannot_bind_unidentified_documents(tmp_path, member, value, order):
+    path, _ = produce(tmp_path)
+    conn = db.get_db(str(path))
+    with conn:
+        conn.execute("DELETE FROM index_meta WHERE key='index_identity'")
+    conn.close()
+    declaration_file = tmp_path / "operations-identity.json"
+    encoded = declaration_file.read_text()
+    duplicate = '"' + member + '":' + json.dumps(value)
+    raw = '{' + duplicate + ',' + encoded[1:] if order == "first" else encoded[:-1] + ',' + duplicate + '}'
+    declaration_file.write_text(raw)
+    before = path.read_bytes()
+    result = runner.invoke(app, ["bind-index", "--db", str(path), "--identity-file", str(declaration_file)])
+    assert result.exit_code != 0
+    assert "duplicate producer identity member" in result.output
+    assert path.read_bytes() == before

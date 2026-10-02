@@ -806,7 +806,7 @@ def bind_index(
     try:
         if not Path(db_path).is_file():
             raise MindgraphError("Cannot bind a missing database")
-        declaration = json.loads(identity_file.read_text(encoding="utf-8"))
+        declaration = index_identity.decode_identity_json(identity_file.read_text(encoding="utf-8"))
         conn = db.get_db(db_path)
         db.validate_query_schema(conn, db_path)
         typer.echo(json.dumps(index_identity.bind_identity(conn, declaration), indent=2))
