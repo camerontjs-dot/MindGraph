@@ -4,6 +4,129 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-10-02 — Reject duplicate producer identity members
+
+**Status:** Separate repair successor; independent qualification pending.
+
+**Observed defect:** Fresh qualification of frozen PR #41 at
+`d1d152cdd0df1b3637d23922009fcff15856dbe8` stopped with `FAIL/BLOCK` when
+`index-identity` accepted two contradictory serialized `index_id` members.
+Python's ordinary JSON decoder selected the last member, which matched the
+stored documents. The failure and unrun downstream controls remain preserved.
+See the [frozen failure receipt](https://github.com/camerontjs-dot/MindGraph/pull/41#issuecomment-5955758113).
+
+**Decision:** Decode producer declarations and stored bindings with unique
+JSON object members. Reject duplicate names after escape decoding, including
+repeated identical values, before field, map or expected-index validation.
+Use the same decoder for initial binding input, identity reads and attempted
+binding replacement. A rejected stored record remains unchanged.
+
+**Compatibility and limits:** The v1 wire keys, canonical map serialization,
+valid producer declarations, explicit scope aliases and legacy transports
+remain unchanged. This removes an ambiguous representation; it does not
+authenticate the producer or establish source truth. PR #41 stays frozen and
+its failure remains separate from this successor's evidence.
+
+> **Binds:** v1 producer declaration and stored-binding JSON decoding
+> **Tier:** T2 (duplicate-member declarations and reads blocked)
+> **Check:** `tests/test_index_identity.py`; real CLI and shared-MCP controls
+> **Escape:** preserve the rejected record and stage an explicit unique-member declaration
+
+---
+
+## 2026-10-02 — Explicit embedding device for local runtime recovery
+
+**Status:** Additive runtime configuration; separate from source-map repair.
+
+**Observed condition:** The local MPS backend emitted an insufficient-memory
+error during ordinary semantic queries. Such runtime failure does not establish
+a successful retrieval even when the process returns normally.
+
+**Decision:** Support an explicit `MINDGRAPH_DEVICE` value passed to the actual
+SentenceTransformer loader. `cpu`, `mps`, `cuda` and `cuda:N` are accepted.
+Omission preserves library auto-detection. Invalid configuration and backend
+failure are explicit errors with no retry on another device. Cache-only normal
+loading and explicit model-bootstrap authority remain unchanged.
+
+**Limits:** This selects the inference device; it does not change models,
+ranking, corpus selection or retrieval-quality policy. Real CPU inference is
+required for CPU runtime claims; constructor tests alone cover configuration.
+
+> **Binds:** configured embedding loader and explicit bootstrap
+> **Tier:** T2 (invalid configured device blocked)
+> **Check:** `tests/test_embedders.py`; real CPU CLI and daemon inference
+> **Escape:** select an available explicit device or repair the requested backend
+
+---
+
+## 2026-10-02 — Independently bind the producer source-document map
+
+**Status:** Successor implementation; independent qualification pending.
+
+**Observed defect:** Exact-head operations qualification stopped with `BLOCK`
+when the v1 source-map hash in an otherwise valid operations database was
+replaced by the genuine projects map hash. The database map was unchanged, and
+the engine and consumer accepted a zero-result query. The 2026-09-30 candidate
+and its negative receipt remain preserved.
+
+**Decision:** Keep the v1 wire contract and independently recompute the source
+projection from every stored document at bind time and each identity read.
+The projection excludes only the stored `path`, sorts by namespace/source path,
+and uses compact sorted-key JSON. Its hash must equal the producer's explicit
+`source_document_map_sha256`. Identity, map validation and retrieval remain on
+one SQLite read snapshot.
+
+**Ownership:** The producer validates selected source bytes and manifest
+membership. The generic engine checks that the declared source map describes
+the queried database. This does not hard-code lifecycle aliases or corpus
+selection into MindGraph. Source claims and currentness remain external authority.
+
+**Compatibility and limits:** Query/index identity keys and legacy two-scope
+transports remain unchanged. A binding with an arbitrary source-map hash now
+fails explicitly; there is no migration, inference or silent rebinding. The
+check does not authenticate an authorized writer who replaces documents and
+all bindings together. See [`docs/index-identity-v1.md`](docs/index-identity-v1.md).
+
+> **Binds:** v1 producer binding and identity-bearing retrieval
+> **Tier:** T2 (mismatched source-map declarations and reads blocked)
+> **Check:** `tests/test_index_identity.py`; real CLI and shared-MCP controls
+> **Escape:** rebuild and stage a separate database through its corpus producer
+
+---
+
+## 2026-09-30 — Producer-bound database identity for empty nominations
+
+**Status:** Successor design; independent cross-repository qualification pending.
+
+**Observed defect:** Conduit #110 accepted a zero-row query against a projects
+database and an unidentified empty index. Document provenance cannot establish
+the identity of the selected database when no document is returned.
+
+**Decision:** Add the opt-in `mindgraph-index-identity/v1` stored binding and
+`mindgraph-query-identity/v1` query envelope. The corpus producer supplies the
+index, trust, lifecycle, manifest and validated source-map authority. MindGraph
+binds that declaration to the stored document map and reads it from the same
+SQLite snapshot as retrieval. It never invents identity from a scope or filename.
+The consumer compares explicit identity and retains its returned-row checks.
+
+**Ownership and compatibility:** MainFrame selects, validates, stages and
+promotes its corpus. MindGraph stores and transports the generic binding.
+Conduit consumes nominations. Legacy CLI arrays, intent envelopes and the
+default knowledge/projects daemon remain compatible. An explicitly configured
+scope can require a stored identity at startup and on each request.
+
+**Alternatives:** Rejecting every empty query loses legitimate no-hit results.
+Caller labels and filenames leave the defect intact. An external receipt alone
+does not bind the database used by the query. A stored binding plus a validated
+document-map hash carries the authority across database copies and rejects a
+stale binding after document changes.
+
+**Limits:** This is local producer authority, not a signature against a malicious
+database writer, source verification, freshness proof or retrieval-quality claim.
+Reconsider if that threat model is required. Rebuild and stage legacy databases;
+do not infer or silently backfill identity on query. See
+[`docs/index-identity-v1.md`](docs/index-identity-v1.md).
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.
