@@ -1,0 +1,120 @@
+name: Portability RC2
+
+on:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "src/**"
+      - "tests/**"
+      - "examples/**"
+      - "scripts/**"
+      - ".github/workflows/portability-rc2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lightweight-mcp:
+    name: lightweight+mcp / py${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install lightweight, MCP and test profiles
+        run: |
+          python -m pip install --upgrade pip build
+          python -m pip install -e '.[mcp,dev]'
+          python -m pip check
+      - name: Maintained deterministic suite
+        run: python -m pytest -q
+      - name: Build wheel
+        run: python -m build --wheel
+      - name: Clean wheel smoke and provenance rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/portability-wheel"
+          python -m venv "$root/venv"
+          "$root/venv/bin/python" -m pip install --upgrade pip
+          "$root/venv/bin/python" -m pip install dist/*.whl
+          "$root/venv/bin/python" -m pip check
+          "$root/venv/bin/mindgraph" --help >/dev/null
+
+          db="$root/test.sqlite"
+          set +e
+          "$root/venv/bin/mindgraph" query "missing state" --db "$db" --lexical-only --json >"$root/missing.out" 2>"$root/missing.err"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          test ! -e "$db"
+
+          mkdir -p "$root/vault"
+          cat >"$root/vault/target.md" <<'EOF'
+          ---
+          title: Portable Target
+          domain: portability
+          ---
+          The antinet portability marker belongs to this synthetic note.
+          EOF
+          cat >"$root/vault/noise.md" <<'EOF'
+          ---
+          title: Unrelated Noise
+          domain: portability
+          ---
+          This document discusses fruit baskets and garden tools.
+          EOF
+
+          build_index() {
+            rm -f "$db"
+            "$root/venv/bin/mindgraph" init --db "$db"
+            "$root/venv/bin/mindgraph" ingest "$root/vault"               --db "$db" --lexical-only               --index-id portability-rc2               --trust-profile synthetic               --namespace portability               --display-prefix portability
+          }
+
+          build_index
+          "$root/venv/bin/mindgraph" query antinet --db "$db" --lexical-only --json >"$root/result1.json"
+          build_index
+          "$root/venv/bin/mindgraph" query antinet --db "$db" --lexical-only --json >"$root/result2.json"
+
+          "$root/venv/bin/python" - "$root/result1.json" "$root/result2.json" <<'PY'
+          import json, sys
+          a = json.load(open(sys.argv[1]))
+          b = json.load(open(sys.argv[2]))
+          assert a and b
+          assert a[0]["source_path"] == "target.md"
+          assert b[0]["source_path"] == "target.md"
+          keep = ("doc_id","source_path","display_path","index_id","trust_profile","namespace")
+          assert {k:a[0].get(k) for k in keep} == {k:b[0].get(k) for k in keep}
+          assert "source_root" not in a[0]
+          assert "source_root" not in b[0]
+          PY
+
+  semantic-profile:
+    name: semantic profile / py3.11
+    runs-on: ubuntu-24.04
+    env:
+      HF_HOME: ${{ runner.temp }}/hf-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install semantic profile in isolated venv
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e '.[semantic]'
+          .venv/bin/python -m pip check
+          echo "semantic_venv_size=$(du -sh .venv | cut -f1)"
+      - name: Explicit model acquisition
+        run: |
+          .venv/bin/mindgraph bootstrap-model --embedder minilm
+          echo "hf_cache_size=$(du -sh "$HF_HOME" | cut -f1)"
+      - name: Real MiniLM example smoke
+        run: .venv/bin/python scripts/run_example_smoke.py > "$RUNNER_TEMP/semantic-smoke.md"
