@@ -1,0 +1,85 @@
+{
+  "schema_version": "mindgraph-stage2-section-boundary/v1",
+  "max_chars": 1000,
+  "documents": [
+    {
+      "id": "ops-handbook",
+      "title": "Operations handbook",
+      "domain": "operations",
+      "doc_type": "policy",
+      "truth_text": "# Deployment rollout\nProduction deployments use a canary rollout before full release. The rollback window stays open until health checks are green and the operator closes the release gate.\n\n# Database backup retention\nDatabase snapshots are retained for thirty days. Restore drills verify that retained snapshots can be recovered before older backups expire."
+    },
+    {
+      "id": "security-handbook",
+      "title": "Security handbook",
+      "domain": "security",
+      "doc_type": "policy",
+      "truth_text": "# Access review\nQuarterly access reviews remove stale accounts and confirm that privileged roles still have a named owner.\n\n# Backup encryption\nDatabase backups are encrypted at rest. Backup encryption keys rotate every ninety days and are held separately from restore credentials."
+    },
+    {
+      "id": "release-notes",
+      "title": "Release notes",
+      "domain": "operations",
+      "doc_type": "note",
+      "truth_text": "# Database changes\nThe October release changes the connection pool defaults and adds a migration warning.\n\n# Access changes\nThe same release updates the sign-in screen and removes an obsolete role label."
+    },
+    {
+      "id": "incident-guide",
+      "title": "Incident guide",
+      "domain": "operations",
+      "doc_type": "guide",
+      "truth_text": "# Severity one escalation\nA severity one incident pages the incident commander immediately when customer data is unavailable or integrity is at risk."
+    },
+    {
+      "id": "vendor-guide",
+      "title": "Vendor onboarding guide",
+      "domain": "procurement",
+      "doc_type": "guide",
+      "truth_text": "# Insurance evidence\nA new vendor must provide current insurance evidence before procurement marks onboarding complete."
+    }
+  ],
+  "cases": [
+    {
+      "id": "backup-retention",
+      "kind": "section_sensitive",
+      "query": "how long are database snapshots retained before older backups expire",
+      "expected_doc": "ops-handbook",
+      "forbidden_docs": ["security-handbook", "release-notes"]
+    },
+    {
+      "id": "backup-key-rotation",
+      "kind": "section_sensitive",
+      "query": "how often are backup encryption keys rotated",
+      "expected_doc": "security-handbook",
+      "forbidden_docs": ["ops-handbook", "release-notes"]
+    },
+    {
+      "id": "canary-rollback",
+      "kind": "section_sensitive",
+      "query": "when does the canary rollout rollback window close",
+      "expected_doc": "ops-handbook",
+      "forbidden_docs": ["release-notes"]
+    },
+    {
+      "id": "stale-access-review",
+      "kind": "section_sensitive",
+      "query": "which review removes stale accounts and confirms privileged role ownership",
+      "expected_doc": "security-handbook",
+      "forbidden_docs": ["release-notes"]
+    },
+    {
+      "id": "severity-one-control",
+      "kind": "control",
+      "query": "what conditions page the incident commander for severity one",
+      "expected_doc": "incident-guide",
+      "forbidden_docs": []
+    },
+    {
+      "id": "vendor-insurance-control",
+      "kind": "control",
+      "query": "what insurance evidence is required before vendor onboarding completes",
+      "expected_doc": "vendor-guide",
+      "forbidden_docs": []
+    }
+  ]
+}
