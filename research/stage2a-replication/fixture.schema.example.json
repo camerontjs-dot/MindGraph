@@ -1,0 +1,29 @@
+{
+  "schema_version": "mindgraph-stage2-section-boundary-replication/v1",
+  "panel_type": "public_mechanism",
+  "max_chars": 1000,
+  "headroom_gate": {
+    "min_section_sensitive": 6,
+    "min_controls": 2,
+    "min_non_rank1_top5": 4,
+    "max_control_rank": 3
+  },
+  "documents": [
+    {
+      "id": "replace-me",
+      "title": "Replace me",
+      "domain": "synthetic",
+      "doc_type": "note",
+      "truth_text": "# Section one\nReplace with authored synthetic prose.\n\n# Section two\nReplace with authored synthetic prose."
+    }
+  ],
+  "cases": [
+    {
+      "id": "replace-me",
+      "kind": "section_sensitive",
+      "query": "replace me",
+      "expected_doc": "replace-me",
+      "forbidden_docs": []
+    }
+  ]
+}
