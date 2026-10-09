@@ -1,0 +1,198 @@
+{
+  "schema": "hierarchical-schema-adversarial-rc0",
+  "sources": [
+    {
+      "id": "SX1",
+      "owner": "fixture",
+      "text": "Explicit authored link alpha:A -> alpha:B.",
+      "status": "citable",
+      "access": "allowed"
+    },
+    {
+      "id": "SX2",
+      "owner": "fixture",
+      "text": "Explicit authored link alpha:B -> alpha:C.",
+      "status": "not_citable",
+      "access": "allowed"
+    },
+    {
+      "id": "SX3",
+      "owner": "fixture",
+      "text": "Explicit authored link alpha:A -> alpha:D.",
+      "status": "citable",
+      "access": "allowed"
+    },
+    {
+      "id": "SX4",
+      "owner": "fixture",
+      "text": "Nominated similarity alpha:A may be related to alpha:E; not verified.",
+      "status": "unverified",
+      "access": "allowed"
+    },
+    {
+      "id": "SX5",
+      "owner": "fixture",
+      "text": "Explicit authored reference alpha:D -> beta:Q; cross-scope access ungranted.",
+      "status": "citable",
+      "access": "allowed"
+    },
+    {
+      "id": "SX6",
+      "owner": "fixture",
+      "text": "Explicit authored link alpha:C -> alpha:A creates a cycle.",
+      "status": "citable",
+      "access": "allowed"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "alpha:A",
+      "scope": "project:alpha",
+      "kind": "file",
+      "eligibility": "citable",
+      "access": "allowed"
+    },
+    {
+      "id": "alpha:B",
+      "scope": "project:alpha",
+      "kind": "file",
+      "eligibility": "not_citable",
+      "access": "allowed"
+    },
+    {
+      "id": "alpha:C",
+      "scope": "project:alpha",
+      "kind": "file",
+      "eligibility": "citable",
+      "access": "allowed"
+    },
+    {
+      "id": "alpha:D",
+      "scope": "project:alpha",
+      "kind": "file",
+      "eligibility": "citable",
+      "access": "allowed"
+    },
+    {
+      "id": "alpha:E",
+      "scope": "project:alpha",
+      "kind": "file",
+      "eligibility": "unverified",
+      "access": "allowed"
+    },
+    {
+      "id": "beta:Q",
+      "scope": "project:beta",
+      "kind": "file",
+      "eligibility": "citable",
+      "access": "allowed"
+    }
+  ],
+  "edges": [
+    {
+      "source": "alpha:A",
+      "target": "alpha:B",
+      "predicate": "LINKS_TO",
+      "provenance": "source_asserted",
+      "evidence": "SX1"
+    },
+    {
+      "source": "alpha:B",
+      "target": "alpha:C",
+      "predicate": "LINKS_TO",
+      "provenance": "source_asserted",
+      "evidence": "SX2"
+    },
+    {
+      "source": "alpha:A",
+      "target": "alpha:D",
+      "predicate": "LINKS_TO",
+      "provenance": "source_asserted",
+      "evidence": "SX3"
+    },
+    {
+      "source": "alpha:A",
+      "target": "alpha:E",
+      "predicate": "LINKS_TO",
+      "provenance": "derived_nomination",
+      "evidence": "SX4"
+    },
+    {
+      "source": "alpha:D",
+      "target": "beta:Q",
+      "predicate": "LINKS_TO",
+      "provenance": "source_asserted",
+      "evidence": "SX5"
+    },
+    {
+      "source": "alpha:C",
+      "target": "alpha:A",
+      "predicate": "LINKS_TO",
+      "provenance": "source_asserted",
+      "evidence": "SX6"
+    }
+  ],
+  "predeclared_queries": [
+    {
+      "id": "AtoD",
+      "from": "alpha:A",
+      "to": "alpha:D",
+      "qualified": true,
+      "source_path": [
+        "SX3"
+      ],
+      "max_hops": 3
+    },
+    {
+      "id": "AtoC",
+      "from": "alpha:A",
+      "to": "alpha:C",
+      "qualified": false,
+      "reason": "not_citable_intermediate_alpha_B",
+      "max_hops": 3
+    },
+    {
+      "id": "AtoE",
+      "from": "alpha:A",
+      "to": "alpha:E",
+      "qualified": false,
+      "reason": "derived_nomination_unverified",
+      "max_hops": 3
+    },
+    {
+      "id": "DtoQ",
+      "from": "alpha:D",
+      "to": "beta:Q",
+      "qualified": false,
+      "reason": "cross_scope_without_grant",
+      "max_hops": 3
+    },
+    {
+      "id": "CtoD",
+      "from": "alpha:C",
+      "to": "alpha:D",
+      "qualified": true,
+      "source_path": [
+        "SX6",
+        "SX3"
+      ],
+      "max_hops": 3
+    },
+    {
+      "id": "DtoA",
+      "from": "alpha:D",
+      "to": "alpha:A",
+      "qualified": false,
+      "reason": "reverse_direction_not_asserted",
+      "max_hops": 3
+    },
+    {
+      "id": "AtoA",
+      "from": "alpha:A",
+      "to": "alpha:A",
+      "qualified": true,
+      "source_path": [],
+      "max_hops": 3
+    }
+  ]
+}
