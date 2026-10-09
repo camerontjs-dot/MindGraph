@@ -58,6 +58,17 @@ Both corpus snapshots are contemporaneous index backups, not source-file recrawl
 
 Ten deterministic self-checks passed before the freeze. After the decisive run, a separately written read-only verifier passed across 34 cases, recomputing per-arm source recall from preserved rankings, verifying graph edge membership and top-three seed lineage, comparing all B10 prefixes, and checking frozen artifact hashes. The verifier is a separate implementation of the scoring check, but **not an independently isolated research actor or independent human oracle**.
 
+## Additional interpretation limits
+
+These points were recognized during post-result code/fixture inspection and are recorded without modifying the frozen scoring apparatus:
+
+- **Knowledge headroom:** all seven fully indexed positive cases were already recovered by B11. Three other positive cases had at least one missing gold anchor. No frozen Knowledge query contained a *fully indexed required-source miss* that the bounded graph policy could rescue. The null Knowledge graph result is therefore strongly **ceiling-limited**.
+- **Projects graph reachability:** the sole admitted Projects graph target appeared on a case whose gold source was not indexed. The hybrid retrieval failures on index-eligible Projects cases had no admitted graph target under this one-hop/top-three policy. It would be incorrect to generalize that graphs cannot help project-navigation tasks.
+- **Lexical versus hybrid confound:** this test uses actual engine-style semantic-query formatting for hybrid arms. The `mainframe` template prefixes `[intent=query]` before `run_query`, which feeds that same decorated string to the lexical FTS5 component of the hybrid path. A10 lexical used the raw query. Thus A10-vs-B10/B11 is a comparison of the **configured operational paths**, not a controlled isolate-the-embedding ablation. This does **not** affect the primary B11-versus-C10plus1 comparison, which shares the identical formatted query, frozen ranking, and original first-ten prefix.
+- The local cache contained more than one MiniLM snapshot when inspected afterward, so the exact model revision exercised during the decisive run remains **UNKNOWN**. The same in-memory loaded model was used across both primary comparison arms.
+
+These limitations narrow generalization, not the observed frozen per-arm results.
+
 ## Engineering consequence
 
 There is no evidence from this workload to justify a mandatory graph expansion step for every MainFrame query, graph-driven default ranking, or a production migration. Ordinary keyword retrieval remains competitive, and the Projects hybrid miss deserves its own failure-class analysis without changing this frozen record.
