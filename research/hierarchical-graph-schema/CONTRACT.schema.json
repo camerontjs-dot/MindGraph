@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/camerontjs-dot/MindGraph/blob/research/hierarchical-graph-schema-20261009/research/hierarchical-graph-schema/CONTRACT.schema.json",
+  "title": "MainFrame hierarchical graph research projection v0.3 (envelope only)",
+  "$comment": "Structural shape only. Cross-record source identity and actual Git/SQLite byte attestation require source_bindings.py and attest.py. Not a production schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "profile",
+    "scope",
+    "authority",
+    "nodes",
+    "edges",
+    "sources",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": {
+      "const": "mainframe-graph-research-v0.3"
+    },
+    "profile": {
+      "enum": [
+        "project_code",
+        "knowledge_notes",
+        "operations_history",
+        "federated_overlay"
+      ]
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authority": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "diagnostics": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "const": "project_code"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "scope": {
+            "pattern": "^project:[a-z0-9-]+$"
+          },
+          "authority": {
+            "type": "object",
+            "required": [
+              "kind",
+              "repo",
+              "commit",
+              "tree"
+            ],
+            "properties": {
+              "kind": {
+                "const": "git_commit"
+              },
+              "repo": {
+                "type": "string",
+                "minLength": 1
+              },
+              "commit": {
+                "$ref": "#/$defs/gitSha"
+              },
+              "tree": {
+                "$ref": "#/$defs/gitSha"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "enum": [
+              "knowledge_notes",
+              "operations_history"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "authority": {
+            "type": "object",
+            "required": [
+              "kind",
+              "sha256"
+            ],
+            "properties": {
+              "kind": {
+                "const": "sqlite_snapshot"
+              },
+              "sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "scope",
+        "kind",
+        "locator",
+        "source_id",
+        "access",
+        "citation_class",
+        "as_of_commit",
+        "attrs"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "project",
+            "directory",
+            "file",
+            "symbol",
+            "note",
+            "operational_record",
+            "record"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "access": {
+          "enum": [
+            "allowed",
+            "denied",
+            "unknown"
+          ]
+        },
+        "citation_class": {
+          "enum": [
+            "citable",
+            "not_citable",
+            "unverified"
+          ]
+        },
+        "as_of_commit": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/gitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attrs": {
+          "type": "object"
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source",
+        "target",
+        "predicate",
+        "provenance",
+        "evidence_source_id",
+        "line",
+        "direction"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "predicate": {
+          "enum": [
+            "CONTAINS",
+            "DECLARES",
+            "IMPORTS_MODULE",
+            "LINKS_TO",
+            "EVIDENCED_BY",
+            "SUPERSEDED_BY"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "observed_structure",
+            "source_asserted",
+            "reviewed_coded",
+            "derived_nomination"
+          ]
+        },
+        "evidence_source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "direction": {
+          "const": "forward"
+        },
+        "scope_bridge": {
+          "const": "explicit_reference"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "access",
+        "citation_class"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "git_tree",
+            "git_blob",
+            "indexed_document",
+            "synthetic_statement"
+          ]
+        },
+        "access": {
+          "enum": [
+            "allowed",
+            "denied",
+            "unknown"
+          ]
+        },
+        "citation_class": {
+          "enum": [
+            "citable",
+            "not_citable",
+            "unverified"
+          ]
+        },
+        "repo": {
+          "type": "string"
+        },
+        "commit": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "tree": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "blob": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "path": {
+          "type": "string"
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}
