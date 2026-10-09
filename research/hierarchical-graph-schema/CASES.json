@@ -1,0 +1,126 @@
+{
+  "schema": "mainframe-hierarchical-schema-gold-rc0",
+  "git_versions": {
+    "mindgraph": {
+      "repo": "camerontjs-dot/MindGraph",
+      "commit": "8df9ae7fccdb742558950ef9bdedb96cc74df6d0",
+      "tree": "44111ff75c53a1862001b9d041944e81a2d1430a"
+    },
+    "conduit": {
+      "repo": "camerontjs-dot/Conduit",
+      "commit": "10a8d03852b1589a98f212d317c26463cda93c76",
+      "tree": "5a134c3fd68f0515199ce0b062c9954abac77854"
+    }
+  },
+  "positive_cases": [
+    {
+      "id": "M01",
+      "repo": "mindgraph",
+      "goal": "Navigate repo directory structure to query module",
+      "subject": "repo",
+      "predicate": "CONTAINS",
+      "object": "src/mindgraph/query.py",
+      "expected_file": true
+    },
+    {
+      "id": "M02",
+      "repo": "mindgraph",
+      "goal": "Find Python function run_query in query.py",
+      "subject": "src/mindgraph/query.py",
+      "predicate": "DECLARES",
+      "object": "run_query",
+      "expected_symbol_type": "function"
+    },
+    {
+      "id": "M03",
+      "repo": "mindgraph",
+      "goal": "Follow explicitly coded module import from CLI to query.py",
+      "subject": "src/mindgraph/cli.py",
+      "predicate": "IMPORTS_MODULE",
+      "object": "src/mindgraph/query.py"
+    },
+    {
+      "id": "M04",
+      "repo": "mindgraph",
+      "goal": "Locate test file importing query symbols",
+      "subject": "tests/test_expand.py",
+      "predicate": "IMPORTS_MODULE",
+      "object": "src/mindgraph/query.py"
+    },
+    {
+      "id": "C01",
+      "repo": "conduit",
+      "goal": "Navigate repository tree to MindGraphQuery Swift file",
+      "subject": "repo",
+      "predicate": "CONTAINS",
+      "object": "Sources/ConduitCore/MindGraphQuery.swift",
+      "expected_file": true
+    },
+    {
+      "id": "C02",
+      "repo": "conduit",
+      "goal": "Navigate repository tree to AppModel Swift file",
+      "subject": "repo",
+      "predicate": "CONTAINS",
+      "object": "Sources/Conduit/AppModel.swift",
+      "expected_file": true
+    },
+    {
+      "id": "C03",
+      "repo": "conduit",
+      "goal": "Navigate repository tree to native MindGraphQueryView Swift file",
+      "subject": "repo",
+      "predicate": "CONTAINS",
+      "object": "Sources/Conduit/MindGraphQueryView.swift",
+      "expected_file": true
+    }
+  ],
+  "negative_cases": [
+    {
+      "id": "N01",
+      "repo": "conduit",
+      "goal": "Do not claim Swift symbol definitions from an unqualified Python-only parser",
+      "subject": "Sources/Conduit/AppModel.swift",
+      "forbid_predicate": "DECLARES"
+    },
+    {
+      "id": "N02",
+      "repo": "mindgraph",
+      "goal": "Do not infer coverage from similar test filename",
+      "subject": "tests/test_expand.py",
+      "forbid_predicate": "TESTED_BY"
+    },
+    {
+      "id": "N03",
+      "repo": "mindgraph",
+      "goal": "Do not infer semantic dependency from mention of Conduit in a planning file",
+      "subject": "docs/VNEXT_RETRIEVAL_PLAN.md",
+      "forbid_predicate": "DEPENDS_ON"
+    },
+    {
+      "id": "N04",
+      "repo": "conduit",
+      "goal": "Do not synthesize a Conduit→MindGraph repo dependency from name similarity",
+      "subject": "Sources/ConduitCore/MindGraphQuery.swift",
+      "forbid_predicate": "DEPENDS_ON"
+    },
+    {
+      "id": "N05",
+      "repo": "mindgraph",
+      "goal": "No tracked source references may traverse parent filesystem",
+      "forbid_path": "../../secret"
+    },
+    {
+      "id": "N06",
+      "repo": "mindgraph",
+      "goal": "No generated currentness or current-approval inference",
+      "forbid_predicate": "QUALIFIED_BY"
+    }
+  ],
+  "separate_private_diagnostic": {
+    "id": "X01",
+    "goal": "Conduit source → MainFrame bin/mindgraph wrapper → pinned MindGraph CLI package",
+    "source_refs": "private local pinned MainFrame Git object; not a scored public task",
+    "allow_claim": "explicit references only, not qualified runtime call path"
+  }
+}
