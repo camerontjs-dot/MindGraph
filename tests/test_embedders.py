@@ -46,6 +46,17 @@ def test_mainframe_template_prefixes():
     assert "GxP Note" in passage
 
 
+@pytest.mark.parametrize("loader", [
+    embedders.load_sentence_embedder,
+    embedders.bootstrap_sentence_embedder,
+])
+def test_missing_semantic_dependency_points_to_this_checkout(monkeypatch, loader):
+    monkeypatch.setitem(sys.modules, "sentence_transformers", None)
+    with pytest.raises(EmbeddingError) as error:
+        loader(embedders.resolve_embedder("minilm"))
+    assert "python -m pip install '.[semantic]'" in str(error.value)
+
+
 def test_load_sentence_embedder_uses_local_files_only(monkeypatch):
     """Loader must resolve models from the local cache only (no hub metadata)."""
     captured: dict[str, object] = {}

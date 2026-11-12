@@ -10,6 +10,11 @@ from mindgraph.exceptions import EmbeddingError
 
 EmbedTemplate = Literal["none", "mainframe"]
 
+SEMANTIC_INSTALL_HINT = (
+    "Activate your MindGraph environment and run `python -m pip install '.[semantic]'` "
+    "from the root of the MindGraph checkout."
+)
+
 
 @dataclass(frozen=True)
 class EmbedderSpec:
@@ -93,8 +98,7 @@ def load_sentence_embedder(spec: EmbedderSpec):
         from sentence_transformers import SentenceTransformer
     except ModuleNotFoundError as exc:
         raise EmbeddingError(
-            "Semantic support is not installed. Install it with "
-            "`pip install 'mindgraph[semantic]'` before semantic ingest/query."
+            f"Semantic support is not installed. {SEMANTIC_INSTALL_HINT}"
         ) from exc
 
     try:
@@ -120,8 +124,7 @@ def bootstrap_sentence_embedder(spec: EmbedderSpec):
         from sentence_transformers import SentenceTransformer
     except ModuleNotFoundError as exc:
         raise EmbeddingError(
-            "Semantic support is not installed. Install it with "
-            "`pip install 'mindgraph[semantic]'` before model bootstrap."
+            f"Semantic support is not installed. {SEMANTIC_INSTALL_HINT}"
         ) from exc
 
     try:

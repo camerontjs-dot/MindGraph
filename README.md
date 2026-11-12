@@ -1,8 +1,70 @@
 # MindGraph
 
-MindGraph is a local, graph-augmented retrieval engine for personal Markdown knowledge bases. It ingests a directory of notes, extracts a typed `[[link]]` document graph, chunks the body text, and stores everything in one SQLite file. The core profile provides lexical search and graph traversal; an optional semantic profile adds vector similarity over the same store.
+Search a folder of Markdown notes on your own machine. MindGraph returns the path to each matching note, a passage to inspect, and whether it found the note through your search terms or a link another note’s author wrote. The base install uses SQLite. An optional semantic search mode can also look for related wording.
 
-This is the engine I run against Mainframe, my own Markdown knowledge base. Any vault of Markdown notes with `[[wikilink]]` syntax (Obsidian, Foam, Logseq with the right setting) works the same way.
+## Try MindGraph on seven notes
+
+Start with Git and Python 3.10 or later in a macOS or Linux shell. Clone this repository and install from the checkout. The bare `pip install mindgraph` name on [PyPI](https://pypi.org/project/mindgraph/) belongs to another project. The dot below selects this source tree.
+
+```bash
+git clone https://github.com/camerontjs-dot/MindGraph.git
+cd MindGraph
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install .
+```
+
+Use a fresh index for the [seven bundled notes](examples/example-vault/). Keep this terminal open for the commands below. The base search runs without a model download, API key, or server.
+
+```bash
+trial_dir=$(mktemp -d)
+mindgraph ingest examples/example-vault --db "$trial_dir/example.sqlite" --lexical-only
+mindgraph query antinet --db "$trial_dir/example.sqlite" --lexical-only --top-k 1 --expand
+```
+
+| What you should see | Why it appeared |
+|---|---|
+| 1. [mental-models-overview.md](examples/example-vault/mental-models-overview.md), `signal=lexical` | The note contains the word “Antinet.” |
+| 2. [feedback-loops.md](examples/example-vault/feedback-loops.md), `signal=expanded` | The first note links to it with `[[feedback-loops]]`. |
+
+Here, `--top-k 1` asks for one direct match. `--expand` lets you follow links from that match. Drop `--expand` and repeat the query to see just the keyword hit.
+
+## Try a question from your own notes
+
+Choose a folder of Markdown files you already search. Before looking at the results, write down a question and the file you would open, if you know it. If you would accept more than one note, keep those alternatives too. Replace the folder and query in this example with your own.
+
+```bash
+mindgraph ingest "/path/to/your/notes" --db "$trial_dir/notes.sqlite" --lexical-only
+mindgraph query "your search terms" --db "$trial_dir/notes.sqlite" --lexical-only --top-k 5
+```
+
+The two examples use separate index files. Each ingest refreshes its database from the supplied folder and prunes indexed documents absent from it. For ongoing use, pick a dedicated database path for that folder and reuse it when the notes change.
+
+Try three questions you would otherwise look up with your editor, vault search, or grep. Write down what your usual search finds and where the first useful MindGraph result appears. If you add `--expand`, did a link lead to a note you would actually open?
+
+<details>
+<summary>Try semantic search on a question that keywords missed</summary>
+
+From the same checkout and active environment, install the semantic extra and download MiniLM once. Use the same folder and the same question so you can compare the results.
+
+```bash
+python -m pip install '.[semantic]'
+mindgraph bootstrap-model --embedder minilm
+mindgraph ingest "/path/to/your/notes" --db "$trial_dir/notes-minilm.sqlite" --embedder minilm
+mindgraph query "your search terms" --db "$trial_dir/notes-minilm.sqlite" --embedder minilm --top-k 5
+```
+
+See the [semantic walkthrough](#try-it) for captured results on the example vault.
+
+</details>
+
+**[Tell us how a search went](https://github.com/camerontjs-dot/MindGraph/issues/new?template=search-report.md)**, whether you found the right note, found nothing useful, or got stuck installing. A description or redacted filenames are enough. Your notes and database can stay on your machine.
+
+## Contribute a query, test, or idea
+
+What would you search for, and which note or passage would answer it? [Suggest a retrieval case](https://github.com/camerontjs-dot/MindGraph/issues/new?template=retrieval-case.md). We welcome examples where two notes are acceptable, where following a link helps or distracts, and where the folder contains no answer.
+
+For an example you can reproduce, try [two queries in both MindGraph and BlackBelt’s Markdown KB](examples/blackbelt-comparison/). To write a regression test or contribute a few short Markdown notes of your own, see [CONTRIBUTING.md](CONTRIBUTING.md). If you want a small coding task, [help test the model-free CLI walkthrough](https://github.com/camerontjs-dot/MindGraph/issues/65).
 
 ## Installation profiles
 
@@ -36,7 +98,7 @@ Install the extra required by the operation you intend to run.
 
 `mindgraph query <text>` returns ranked chunks. Two signals run over the same SQLite store and fuse with Reciprocal Rank Fusion at the canonical `k = 60`:
 
-- Lexical: FTS5 BM25 over the chunked Truth text
+- Lexical: FTS5 BM25 over each document’s title and full Truth body
 - Semantic: `sqlite-vec` cosine over `vec_chunks`
 
 Each result carries a `signal` label (`lexical`, `semantic`, `fused`, `expanded`, or `associated`), a `rrf_score`, and the per-signal `lexical_rank` and `semantic_rank` integers, so the attribution is mechanically verifiable. Ties break by `(doc_id, chunk_index)` lexicographic for deterministic output. Free-text queries pass through an FTS5 sanitizer that strips operator characters and the uppercase keywords `AND`, `OR`, `NOT`, `NEAR`, then OR-joins the surviving tokens.
@@ -92,7 +154,7 @@ classify_query_scope("some unfiled notes", vocab)
 ## What this does not do yet
 
 - There is no LLM generation step. MindGraph retrieves and ranks. It does not write summaries, answers, or explanations.
-- Renaming a file produces a new document ID. The old document remains in the database until a future cleanup pass prunes orphans.
+- Renaming a file produces a new document ID. Re-ingesting the folder prunes the old path from the index. Links to the old name can remain dangling.
 - Only Markdown is a first-class input. PDFs and other formats are out of scope for this asset.
 - Use a **separate SQLite file per embedder** (`--embedder` sets `vec_chunks` dimensions at init). Re-ingest the full scope into each eval DB; do not swap models in-place on one DB.
 - Lexical-only results surface chunk index 0 because there is no semantic ranking to pick a better chunk from. Fused and semantic results surface the best-ranked chunk per document.
@@ -102,15 +164,16 @@ classify_query_scope("some unfiled notes", vocab)
 
 ## Useful commands
 
+Choose the commands for your use case. Replace the vault path and query with your own. The MiniLM examples assume its semantic extra is installed and the default embedder is MiniLM.
+
 ```bash
 mindgraph init --db mindgraph.sqlite
 mindgraph bootstrap-model --embedder minilm
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite
 mindgraph ingest path/to/your/vault --db lexical.sqlite --lexical-only
-mindgraph ingest path/to/your/vault --db mindgraph.sqlite --embedder bge-small --embed-template mainframe
 mindgraph ingest path/to/your/vault --db mindgraph.sqlite --verbose
-mindgraph ingest path/to/your/vault --db mindgraph.sqlite --index-id knowledge --trust-profile durable_knowledge --namespace knowledge --display-prefix knowledge
-mindgraph ingest-many path/to/manifest.json --db mindgraph.sqlite
+mindgraph ingest path/to/your/vault --db scoped.sqlite --index-id knowledge --trust-profile durable_knowledge --namespace knowledge --display-prefix knowledge
+mindgraph ingest-many path/to/manifest.json --db multi-root.sqlite
 mindgraph query "what does this vault say about X" --db mindgraph.sqlite
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json
 mindgraph query "..." --db mindgraph.sqlite --top-k 5 --json --envelope
@@ -118,16 +181,24 @@ mindgraph query "..." --db mindgraph.sqlite --expand --json --envelope --graph-a
 mindgraph query "..." --db mindgraph.sqlite --expand
 mindgraph query "..." --db mindgraph.sqlite --expand --depth 2 --expand-top-k 10
 mindgraph query "..." --db mindgraph.sqlite --associate --associate-top-k 10
-mindgraph query "..." --db mindgraph.sqlite --embedder e5-small --embed-template mainframe
 mindgraph query "..." --db lexical.sqlite --lexical-only
-mindgraph neighbors <doc_id> --db mindgraph.sqlite
-mindgraph neighbors <doc_id> --db mindgraph.sqlite --json
+# Copy a doc_id from query --json to inspect that note's links.
+doc_id="replace-with-doc-id"
+mindgraph neighbors "$doc_id" --db mindgraph.sqlite
+mindgraph neighbors "$doc_id" --db mindgraph.sqlite --json
 mindgraph serve-mcp --db mindgraph.sqlite
 mindgraph serve-mcp --db mindgraph.sqlite --verbose
 ```
 
-The commands above are the compatibility path: one database, stdio transport,
-and legacy list-shaped query/neighbor JSON by default.
+To try a different model, bootstrap it and use a separate database. Keep the model and template consistent between ingest and query. For example, this pair uses BGE Small with the MainFrame template.
+
+```bash
+mindgraph bootstrap-model --embedder bge-small
+mindgraph ingest path/to/your/vault --db bge.sqlite --embedder bge-small --embed-template mainframe
+mindgraph query "your search terms" --db bge.sqlite --embedder bge-small --embed-template mainframe
+```
+
+Each query uses one database. Query and neighbor JSON are lists by default.
 
 ### Optional shared daemon
 
@@ -135,10 +206,11 @@ The opt-in shared server loads one embedder and opens each declared index
 read-only. You choose the scope names and their trust labels. It binds only to
 loopback and requires every tool call to select exactly one of your scopes. Its
 responses expose the selected scope and trust profile and never blend stores.
+Start it after building both indexes. The [MCP setup below](#mcp) shows how to create them.
 
 ```bash
-mindgraph daemon-start --scope notes=~/.mindgraph/notes.sqlite \
-                       --scope archive=~/.mindgraph/archive.sqlite
+mindgraph daemon-start --scope "notes=$HOME/.mindgraph/notes.sqlite" \
+                       --scope "archive=$HOME/.mindgraph/archive.sqlite"
 mindgraph daemon-status
 mindgraph daemon-health
 mindgraph mcp-proxy --url http://127.0.0.1:8000/mcp
@@ -149,13 +221,16 @@ The proxy does not start the daemon for you. See the [MCP](#mcp) section for
 declaring scopes, connecting clients, and what is not established.
 
 Semantic model acquisition is an explicit setup step. `bootstrap-model` may
-use the configured model hub and caches the selected model; normal ingest and
-query then load it cache-only. If the cache is missing, the command fails with
-an instruction to install the semantic extra and run `bootstrap-model`.
+use the configured model hub and caches the selected model. Normal ingest and
+query load it from the local cache. If the optional dependency or model is
+missing, run `python -m pip install '.[semantic]'` from this checkout, then
+`mindgraph bootstrap-model --embedder minilm` (or your selected embedder).
 
 ## Try it
 
-A small seven-file Markdown vault under `examples/example-vault/` exercises every retrieval path the engine exposes: lexical-only matches, semantic-only matches, fused matches, dangling graph edges, and graph expansion. Run the sequence below from the asset root after `pip install -e '.[full]'` and `mindgraph bootstrap-model` to reproduce the semantic captures. The captures regenerate from `scripts/run_example_smoke.py` against a fresh temporary database.
+The following captured runs use MiniLM with the [seven example notes](examples/example-vault/). They show a keyword hit that also ranks semantically, results from vector similarity alone, graph expansion, and a dangling link. To repeat the commands, run `python -m pip install '.[semantic]'` from the checkout and create the database directory with `mkdir -p /tmp/mindgraph-example`. Bootstrap downloads the model if needed. Use a fresh index to reproduce the initial ingest counts.
+
+The [capture script](scripts/run_example_smoke.py) runs the sequence with `.venv/bin/mindgraph` in a fresh temporary database directory. Its output shows the path used for that run.
 
 ### Bootstrap the semantic model
 
@@ -302,10 +377,7 @@ MindGraph ships MCP transports around the same retrieval code used by the CLI.
 It does not add ranking behavior, change the database schema, or turn retrieved
 chunks into verified claims.
 
-Install the `mcp` extra for the transport surface. The MCP server's default
-query path also needs the `semantic` extra and a bootstrapped model; the
-dependency-light core remains usable independently through lexical-only CLI
-ingest/query.
+For the examples below, run `python -m pip install '.[full]'` from this checkout, then `mindgraph bootstrap-model --embedder minilm`. The full extra installs both the MCP transport and the semantic dependencies for the server’s default query path.
 
 Two transports ship. Pick by how many databases you need open at once.
 
@@ -328,6 +400,7 @@ label that rides along on every result from that store. Name them after whatever
 distinction actually matters in your vault. Build one database per scope:
 
 ```bash
+mkdir -p "$HOME/.mindgraph"
 mindgraph init   --db ~/.mindgraph/recipes.sqlite
 mindgraph ingest ~/vault/recipes --db ~/.mindgraph/recipes.sqlite \
   --index-id recipes --namespace recipes --display-prefix recipes
@@ -341,8 +414,8 @@ Then declare them with a repeatable `--scope`:
 
 ```bash
 mindgraph daemon-start \
-  --scope recipes=~/.mindgraph/recipes.sqlite \
-  --scope journal:personal_log=~/.mindgraph/journal.sqlite
+  --scope "recipes=$HOME/.mindgraph/recipes.sqlite" \
+  --scope "journal:personal_log=$HOME/.mindgraph/journal.sqlite"
 mindgraph daemon-status
 mindgraph daemon-health
 mindgraph daemon-stop
@@ -422,9 +495,10 @@ start the daemon for you.
 For one index bound to one client, or for isolated debugging:
 
 ```bash
-mindgraph init   --db /tmp/mindgraph-mcp/db.sqlite
-mindgraph ingest examples/example-vault --db /tmp/mindgraph-mcp/db.sqlite
-mindgraph serve-mcp --db /tmp/mindgraph-mcp/db.sqlite --verbose
+mcp_dir=$(mktemp -d)
+mindgraph init   --db "$mcp_dir/db.sqlite"
+mindgraph ingest examples/example-vault --db "$mcp_dir/db.sqlite"
+mindgraph serve-mcp --db "$mcp_dir/db.sqlite" --verbose
 ```
 
 Stdout is reserved for MCP protocol frames; logs go to stderr.
@@ -482,9 +556,10 @@ The examples test suite (`tests/test_examples.py`) ingests the committed `exampl
 
 The MCP test suite (`tests/test_mcp.py`) uses the official Python MCP SDK's in-memory client plus the deterministic `KeywordEmbedder` stub. It asserts server startup, missing-DB startup failure, `query` and `graph_neighbors` output shape parity with CLI JSON, opt-in envelope metadata, expansion parameter routing, dangling-edge preservation, and a clean tool error for unknown `doc_id` values.
 
-Run the full suite from the asset root:
+Run the full suite from the checkout with the virtual environment above. The MCP tests need the MCP SDK during collection.
 
 ```bash
+.venv/bin/python -m pip install -e '.[dev,mcp]'
 .venv/bin/python -m pytest
 ```
 

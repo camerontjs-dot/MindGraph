@@ -16,25 +16,15 @@ Usage (from the asset root):
 Inspect `/tmp/captures.md` and paste blocks into the README's "Try it" section.
 """
 
-import shutil
+import shlex
 import subprocess
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from mindgraph import parser
 
 ASSET_ROOT = Path(__file__).resolve().parent.parent
 VAULT_PATH = ASSET_ROOT / "examples" / "example-vault"
-DB_DIR = Path("/tmp/mindgraph-example")
-DB_PATH = DB_DIR / "db.sqlite"
-DB_PATH_STR = str(DB_PATH)
-
-
-def reset_db_dir() -> None:
-    if DB_DIR.exists():
-        shutil.rmtree(DB_DIR)
-    DB_DIR.mkdir(parents=True)
-
-
 _NOISE_SUBSTRINGS = (
     "HTTP Request:",
     "huggingface_hub.utils._http",
@@ -89,7 +79,7 @@ def emit_block(
     print(f"### {heading}")
     print()
     print("```")
-    print("$ " + " ".join(display_cmd))
+    print("$ " + shlex.join(display_cmd))
     if stderr.strip():
         print(stderr.rstrip())
     if stdout.strip():
@@ -98,8 +88,7 @@ def emit_block(
     print()
 
 
-def main() -> None:
-    reset_db_dir()
+def generate_captures(db_path: str) -> None:
     mindgraph_bin = str(ASSET_ROOT / ".venv" / "bin" / "mindgraph")
 
     # 1. explicit model acquisition
@@ -112,17 +101,17 @@ def main() -> None:
     )
 
     # 2. init
-    out, err = run([mindgraph_bin, "init", "--db", DB_PATH_STR])
+    out, err = run([mindgraph_bin, "init", "--db", db_path])
     emit_block(
         "Initialize the database",
-        ["mindgraph", "init", "--db", DB_PATH_STR],
+        ["mindgraph", "init", "--db", db_path],
         out,
         err,
     )
 
     # 3. ingest — normal runtime is cache-only after bootstrap
     out, err = run(
-        [mindgraph_bin, "ingest", str(VAULT_PATH), "--db", DB_PATH_STR]
+        [mindgraph_bin, "ingest", str(VAULT_PATH), "--db", db_path]
     )
     emit_block(
         "Ingest the example vault",
@@ -131,7 +120,7 @@ def main() -> None:
             "ingest",
             "examples/example-vault",
             "--db",
-            DB_PATH_STR,
+            db_path,
         ],
         out,
         err,
@@ -144,7 +133,7 @@ def main() -> None:
             "query",
             "antinet",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "3",
         ]
@@ -156,7 +145,7 @@ def main() -> None:
             "query",
             "antinet",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "3",
         ],
@@ -171,7 +160,7 @@ def main() -> None:
             "query",
             "satisficing",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "3",
         ]
@@ -183,7 +172,7 @@ def main() -> None:
             "query",
             "satisficing",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "3",
         ],
@@ -198,7 +187,7 @@ def main() -> None:
             "query",
             "balancing feedback",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "3",
         ]
@@ -210,7 +199,7 @@ def main() -> None:
             "query",
             "balancing feedback",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "3",
         ],
@@ -225,7 +214,7 @@ def main() -> None:
             "query",
             "feedback loops",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "1",
             "--expand",
@@ -240,7 +229,7 @@ def main() -> None:
             "query",
             "feedback loops",
             "--db",
-            DB_PATH_STR,
+            db_path,
             "--top-k",
             "1",
             "--expand",
@@ -254,15 +243,16 @@ def main() -> None:
     # 8. neighbors lookup — surfaces the dangling unicycle-mental-model target
     archetypes_id = parser.compute_doc_id("systems-archetypes.md")
     out, err = run(
-        [mindgraph_bin, "neighbors", archetypes_id, "--db", DB_PATH_STR]
+        [mindgraph_bin, "neighbors", archetypes_id, "--db", db_path]
     )
     emit_block(
         "Inspect outbound edges and surface a dangling target",
-        ["mindgraph", "neighbors", archetypes_id, "--db", DB_PATH_STR],
+        ["mindgraph", "neighbors", archetypes_id, "--db", db_path],
         out,
         err,
     )
 
 
 if __name__ == "__main__":
-    main()
+    with TemporaryDirectory(prefix="mindgraph-example-") as trial_dir:
+        generate_captures(str(Path(trial_dir) / "db.sqlite"))
