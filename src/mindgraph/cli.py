@@ -64,13 +64,18 @@ def _load_embedder(embedder: str | None = None):
         ) from exc
 
 
+_MCP_INSTALL_HINT = (
+    "Activate your MindGraph environment and run `python -m pip install '.[mcp]'` "
+    "from the root of the MindGraph checkout."
+)
+
+
 def _require_mcp_server():
     try:
         from mindgraph import mcp_server
     except ModuleNotFoundError as exc:
         raise MindgraphError(
-            "MCP support is not installed. Install it with "
-            "`pip install 'mindgraph[mcp]'` (or `mindgraph[full]`)."
+            f"MCP support is not installed. {_MCP_INSTALL_HINT}"
         ) from exc
     return mcp_server
 
@@ -80,8 +85,7 @@ def _require_mcp_proxy():
         from mindgraph import mcp_proxy
     except ModuleNotFoundError as exc:
         raise MindgraphError(
-            "MCP proxy support is not installed. Install it with "
-            "`pip install 'mindgraph[mcp]'` (or `mindgraph[full]`)."
+            f"MCP proxy support is not installed. {_MCP_INSTALL_HINT}"
         ) from exc
     return mcp_proxy
 

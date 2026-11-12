@@ -1,5 +1,8 @@
-# MindGraph example vault
+# MindGraph examples
 
-A seven-file Markdown vault under `example-vault/` that exercises every retrieval path MindGraph exposes: lexical-only matches, semantic-only matches, fused matches, dangling graph edges, and graph expansion from a seed document. The walkthrough that ingests this vault and shows the captured output for each path lives in the asset README's "Try it" section.
+- [Search seven notes](../README.md#try-mindgraph-on-seven-notes) with the base install. The first result contains the search term. The second follows a link you can inspect in the first note.
+- [Compare two public queries](blackbelt-comparison/) in MindGraph and BlackBelt’s Markdown KB. One question has two useful sources even though the fixture names only one.
+- The [semantic walkthrough](../README.md#try-it) shows keyword and vector results on the same [example vault](example-vault/) using a separate index. Its published captures come from [the real-model smoke script](../scripts/run_example_smoke.py). The [example tests](../tests/test_examples.py) use a deterministic stand-in and run without a model download.
+- [Shared MCP daemon](shared-mcp-daemon.md) shows the optional multi-index service.
 
-The CI-safe smoke test under `../tests/test_examples.py` asserts the expected retrieval surface against this same vault using the deterministic `KeywordEmbedder` stub. The real-model captures in the README come from `../scripts/run_example_smoke.py`, which uses `sentence-transformers/all-MiniLM-L6-v2`.
+Have another question these notes should answer, or a pair of short notes that exposes a miss? [Propose a case](https://github.com/camerontjs-dot/MindGraph/issues/new?template=retrieval-case.md).

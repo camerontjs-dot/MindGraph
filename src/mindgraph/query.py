@@ -17,7 +17,9 @@ from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
+from mindgraph.embedders import (
+    SEMANTIC_INSTALL_HINT, EmbedTemplate, EmbedderSpec, format_query_text,
+)
 from mindgraph.exceptions import DatabaseError, MindgraphError
 from mindgraph.models import NeighborResult, QueryResult, QueryScopeWarning
 
@@ -643,9 +645,8 @@ def run_query(
     if semantic_top_k > 0:
         if embedder is None:
             raise QueryError(
-                "semantic retrieval requires an embedding model; install "
-                "mindgraph[semantic] and run `mindgraph bootstrap-model`, or "
-                "use --lexical-only"
+                f"Semantic retrieval requires an embedding model. {SEMANTIC_INSTALL_HINT} "
+                "Then run `mindgraph bootstrap-model`, or use --lexical-only for lexical retrieval."
             )
         raw = _encode_without_progress(embedder, [query_text])
         query_embedding = [float(x) for x in raw[0]]
@@ -716,8 +717,8 @@ def run_query(
     if associate:
         if embedder is None:
             raise QueryError(
-                "semantic association requires an embedding model; install "
-                "mindgraph[semantic] and run `mindgraph bootstrap-model`"
+                f"Semantic association requires an embedding model. {SEMANTIC_INSTALL_HINT} "
+                "Then run `mindgraph bootstrap-model`."
             )
         output.extend(
             associate_results(
