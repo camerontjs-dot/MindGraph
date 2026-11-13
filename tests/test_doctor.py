@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
@@ -16,6 +17,22 @@ from mindgraph import cli, db
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_missing_sqlite_extension_loader_closes_connection(tmp_path, monkeypatch, read_only):
+    from mindgraph.exceptions import DatabaseError
+
+    conn = Mock(spec=["close"])
+    connect = Mock(return_value=conn)
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    with pytest.raises(DatabaseError, match="SQLite extension loading") as error:
+        db.get_db(str(tmp_path / "notes.sqlite"), read_only=read_only)
+
+    assert "Homebrew" in str(error.value)
+    connect.assert_called_once()
+    conn.close.assert_called_once_with()
 
 
 def test_inspect_healthy_db(tmp_path):

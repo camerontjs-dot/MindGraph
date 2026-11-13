@@ -26,10 +26,9 @@ If you want to start with a small coding task, [add a model-free CLI regression 
 
 For a query over the seven existing notes, [the example tests](tests/test_examples.py) show how to assert a returned path or a link. For different notes, [the query tests](tests/test_query.py) show how to create small Markdown files in pytest's temporary directory and ingest them into a fresh database. State which behavior you expect before changing retrieval code. If several paths are acceptable, assert the condition the use case actually needs, such as finding at least one in the first three results. The keyword embedder in these tests is deterministic. To report what a real embedding model retrieved, give its name and the actual results separately.
 
-From the repository root, run the focused checks in a Python 3.10+ environment. These commands use a macOS or Linux shell.
+From the repository root, use the virtual environment from the [macOS or Linux installation steps](README.md#try-mindgraph-on-seven-notes) to run the focused checks.
 
 ```bash
-python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest -q tests/test_examples.py tests/test_query.py
 ```

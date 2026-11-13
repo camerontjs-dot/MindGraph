@@ -30,9 +30,19 @@ STUB_SIZE_BYTES = 16_384  # 16 KiB
 def _configure_connection(
     conn: sqlite3.Connection, *, read_only: bool
 ) -> sqlite3.Connection:
+    if not callable(getattr(conn, "enable_load_extension", None)):
+        conn.close()
+        raise DatabaseError(
+            "This Python build lacks SQLite extension loading, which MindGraph "
+            "needs for sqlite-vec. Recreate your virtual environment with a "
+            "Python build that supports it. On macOS, see the Homebrew Python "
+            "setup in the MindGraph README."
+        )
     conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
+    try:
+        sqlite_vec.load(conn)
+    finally:
+        conn.enable_load_extension(False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     if read_only:
