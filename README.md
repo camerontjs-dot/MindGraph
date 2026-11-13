@@ -4,12 +4,29 @@ Search a folder of Markdown notes on your own machine. MindGraph returns the pat
 
 ## Try MindGraph on seven notes
 
-Start with Git and Python 3.10 or later in a macOS or Linux shell. Clone this repository and install from the checkout. The bare `pip install mindgraph` name on [PyPI](https://pypi.org/project/mindgraph/) belongs to another project. The dot below selects this source tree.
+Start with Git and Python 3.10 or later in a macOS or Linux shell. MindGraph uses the SQLite FTS5 module and loads the bundled `sqlite-vec` extension, including for keyword search. Install from this checkout because the bare `mindgraph` name on [PyPI](https://pypi.org/project/mindgraph/) belongs to another project.
 
 ```bash
 git clone https://github.com/camerontjs-dot/MindGraph.git
 cd MindGraph
+```
+
+**macOS with Homebrew.** Use Homebrew’s Python 3.12 to create the virtual environment. Some other macOS Python builds omit SQLite extension loading. If you already created a virtual environment with one of those builds, use a fresh checkout or create a new environment with the Homebrew interpreter.
+
+```bash
+brew install python@3.12
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv .venv
+```
+
+**Linux.** Create the environment with your Python 3.10+ interpreter.
+
+```bash
 python3 -m venv .venv
+```
+
+Then activate the environment and install MindGraph from this folder.
+
+```bash
 . .venv/bin/activate
 python -m pip install .
 ```
