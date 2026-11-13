@@ -8,7 +8,8 @@ import logging
 import os
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from threading import RLock
 from pathlib import Path
 from typing import Literal
 
@@ -17,8 +18,9 @@ from mcp.types import CallToolResult, TextContent
 from starlette.responses import JSONResponse
 from starlette.requests import Request
 
-from mindgraph import db
+from mindgraph import db, index_identity
 from mindgraph import graph_admission as graph_admission_mod
+from mindgraph import nominations as nominations_mod
 from mindgraph import query as query_mod
 from mindgraph.embedders import EmbedTemplate, EmbedderSpec, format_query_text
 from mindgraph import intent as intent_mod
@@ -151,8 +153,11 @@ def create_server(
             "(not multi-index federation). "
             "With envelope=true and graph_admission=true, that envelope also "
             "includes graph_admissions (zero or one GraphAdmission). "
-            "graph_admission requires envelope=true. The default array and "
-            "the default envelope omit the field."
+            "With envelope=true and nominations=true, the response uses "
+            "compact mode: it includes one canonical Nomination per ranked "
+            "row and omits the text-bearing results/not_citable arrays. "
+            "graph_admission and nominations each require envelope=true. "
+            "The default array and the default envelope omit the fields."
         ),
     )
     def query_tool(
@@ -168,9 +173,12 @@ def create_server(
         associate_seed_k: int = query_mod.DEFAULT_ASSOCIATE_SEED_K,
         envelope: bool = False,
         graph_admission: bool = False,
+        nominations: bool = False,
     ) -> CallToolResult:
         if graph_admission and not envelope:
             return _tool_error("graph_admission requires envelope=true")
+        if nominations and not envelope:
+            return _tool_error("nominations requires envelope=true")
         formatted_question = question
         if embedder_spec is not None:
             formatted_question = format_query_text(
@@ -218,6 +226,16 @@ def create_server(
                             k=final_top_k,
                         )
                     ]
+                if nominations:
+                    payload["nominations"] = [
+                        item.model_dump()
+                        for item in nominations_mod.project_nominations(
+                            results,
+                            query_text=formatted_question,
+                        )
+                    ]
+                    payload.pop("results", None)
+                    payload.pop("not_citable", None)
                 return _json_result(payload)
             return _json_result([result.model_dump() for result in results])
         except sqlite3.OperationalError as e:
@@ -251,6 +269,29 @@ def create_server(
             logger.exception("unexpected MCP graph_neighbors tool failure")
             raise
 
+    @server.tool(
+        name="expand_nomination",
+        description=(
+            "Expand one nomination expansion_handle into exact source-backed "
+            "chunk text. Fail-closed: a malformed, missing, stale, or "
+            "scope-mismatched handle returns an error, never a different "
+            "source. Expansion adds context, not authority."
+        ),
+    )
+    def expand_nomination_tool(expansion_handle: str) -> CallToolResult:
+        try:
+            expanded = _run_with_lock_retry(
+                lambda: nominations_mod.resolve_expansion(conn, expansion_handle)
+            )
+            return _json_result(expanded.model_dump())
+        except sqlite3.OperationalError as e:
+            return _tool_error(f"Database error: {e}")
+        except MindgraphError as e:
+            return _tool_error(str(e))
+        except Exception:
+            logger.exception("unexpected MCP expand_nomination tool failure")
+            raise
+
     return server
 
 
@@ -269,6 +310,7 @@ def create_shared_server(
     embedder_spec: EmbedderSpec | None = None,
     embed_template: EmbedTemplate = "none",
     lifecycle: IdleLifecycle | None = None,
+    required_identities: dict | None = None,
 ) -> FastMCP:
     """Create a loopback shared server with one explicit scope per call."""
     if host not in {"127.0.0.1", "localhost", "::1"}:
@@ -277,11 +319,16 @@ def create_shared_server(
         raise MCPServerStartupError("MCP path must start with '/'")
     server = FastMCP(
         "mindgraph-shared",
-        instructions="Select one lifecycle scope. Results are nominations, not verified claims.",
+        instructions=(
+            "Select one lifecycle scope. Results are nominations, not verified "
+            "claims. With nominations=true, the response omits full result rows."
+        ),
         host=host,
         port=port,
         streamable_http_path=path,
     )
+    required_identities = required_identities or {}
+    connection_locks = {name: RLock() for name in scopes}
 
     def selected(scope: str) -> tuple[sqlite3.Connection, str]:
         try:
@@ -291,17 +338,30 @@ def create_shared_server(
                 f"unknown scope: {scope}; choose one of: {', '.join(sorted(scopes))}"
             ) from exc
 
+    @contextmanager
+    def selected_snapshot(scope, expose_identity=False):
+        conn, trust = selected(scope)
+        required = required_identities.get(scope)
+        with connection_locks[scope]:
+            with index_identity.read_snapshot(conn) if required or expose_identity else nullcontext():
+                identity = None
+                if required or expose_identity:
+                    expected = required or {"retrieval_scope": scope, "trust_profile": trust}
+                    identity = index_identity.read_identity(conn, expected=expected)
+                yield conn, trust, identity
+
     @server.tool(name="query")
     def scoped_query(
         question: str,
         scope: str,
         final_top_k: int = query_mod.DEFAULT_FINAL_TOP_K,
         graph_admission: bool = False,
+        identity_envelope: bool = False,
+        nominations: bool = False,
     ) -> CallToolResult:
         try:
             activity = lifecycle.request() if lifecycle else _null_context()
-            with activity:
-                conn, trust_profile = selected(scope)
+            with activity, selected_snapshot(scope, identity_envelope) as (conn, trust_profile, identity):
                 if db.get_semantic_enabled(conn) is False:
                     return _tool_error(
                         "This database is lexical-only; re-ingest it without "
@@ -335,6 +395,8 @@ def create_shared_server(
                     "trust_profile": trust_profile,
                     "results": [row.model_dump() for row in rows],
                 }
+                if identity is not None:
+                    payload.update(index_identity.query_envelope(identity, rows))
                 if graph_admission:
                     payload["graph_admissions"] = [
                         item.model_dump()
@@ -346,6 +408,16 @@ def create_shared_server(
                             scope_index=scope,
                         )
                     ]
+                if nominations:
+                    payload["nominations"] = [
+                        item.model_dump()
+                        for item in nominations_mod.project_nominations(
+                            rows,
+                            query_text=formatted,
+                            scope_index=scope,
+                        )
+                    ]
+                    payload.pop("results", None)
                 return _json_result(payload)
         except sqlite3.OperationalError as exc:
             return _tool_error(f"Database error: {exc}")
@@ -356,14 +428,38 @@ def create_shared_server(
     def scoped_neighbors(doc_id: str, scope: str) -> CallToolResult:
         try:
             activity = lifecycle.request() if lifecycle else _null_context()
-            with activity:
-                conn, trust_profile = selected(scope)
+            with activity, selected_snapshot(scope) as (conn, trust_profile, _identity):
                 def lookup():
                     _ensure_document_exists(conn, doc_id)
                     return query_mod.list_neighbors(conn, doc_id)
                 rows = _run_with_lock_retry(lookup)
                 return _json_result({"scope": scope, "trust_profile": trust_profile,
                                      "results": [row.model_dump() for row in rows]})
+        except sqlite3.OperationalError as exc:
+            return _tool_error(f"Database error: {exc}")
+        except MindgraphError as exc:
+            return _tool_error(str(exc))
+
+    @server.tool(name="expand_nomination")
+    def scoped_expand_nomination(
+        expansion_handle: str, scope: str, identity_envelope: bool = False
+    ) -> CallToolResult:
+        try:
+            activity = lifecycle.request() if lifecycle else _null_context()
+            with activity, selected_snapshot(scope, identity_envelope) as (conn, trust_profile, identity):
+                expanded = _run_with_lock_retry(
+                    lambda: nominations_mod.resolve_expansion(
+                        conn, expansion_handle, scope_index=scope
+                    )
+                )
+                payload = expanded.model_dump()
+                payload["scope"] = scope
+                # Registration labels describe routing, not source authority.
+                # Keep the document's trust_profile from source resolution.
+                payload["scope_trust_profile"] = trust_profile
+                if identity is not None:
+                    payload["database_identity"] = identity
+                return _json_result(payload)
         except sqlite3.OperationalError as exc:
             return _tool_error(f"Database error: {exc}")
         except MindgraphError as exc:
