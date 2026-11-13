@@ -1,0 +1,63 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.12"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Linux'
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Select Homebrew Python with loadable SQLite extensions
+        if: runner.os == 'macOS'
+        run: |
+          brew list --versions python@3.12 >/dev/null || brew install python@3.12
+          echo "$(brew --prefix python@3.12)/libexec/bin" >> "$GITHUB_PATH"
+
+      - name: Build and smoke-test the base wheel outside the checkout
+        run: |
+          work=$(mktemp -d)
+          python -m venv "$work/builder"
+          "$work/builder/bin/python" -m pip wheel --no-deps --wheel-dir "$work" .
+          python -m venv "$work/venv"
+          source "$work/venv/bin/activate"
+          cd "$work"
+          python -m pip install ./mindgraph-*.whl
+          python - <<'PY'
+          from importlib.util import find_spec
+          assert all(find_spec(name) is None for name in ("mcp", "torch", "sentence_transformers"))
+          PY
+          mindgraph ingest "$GITHUB_WORKSPACE/examples/example-vault" --db notes.sqlite --lexical-only
+          mindgraph query antinet --db notes.sqlite --lexical-only --top-k 1 --json > hits.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          top = json.loads(Path("hits.json").read_text())[0]
+          assert (top["path"], top["signal"]) == ("mental-models-overview.md", "lexical")
+          PY
+
+      - name: Run the maintained suite with MCP and development dependencies
+        run: |
+          python -m venv "$RUNNER_TEMP/mindgraph-tests"
+          source "$RUNNER_TEMP/mindgraph-tests/bin/activate"
+          python -m pip install '.[dev,mcp]'
+          python -m pytest -q
