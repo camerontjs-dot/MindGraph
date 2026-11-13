@@ -2,6 +2,12 @@
 
 Try [searching seven example notes](README.md#try-mindgraph-on-seven-notes), then [tell us how it went](https://github.com/camerontjs-dot/MindGraph/issues/new?template=search-report.md). A query that found the right note, one that returned plausible but unhelpful notes, or the command that stopped you are all worth sharing.
 
+## Working together
+
+If you disagree, point to the query, passage or test result that would change your conclusion. Personal attacks and harassment are unwelcome. You can [report abuse or spam to GitHub](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam).
+
+Link the original public search report when you turn someone else’s case into a test, and preserve any required credits on shared notes or code. Ask before quoting a private report or naming its author. Share material you have permission to redistribute under the [project’s MIT license](LICENSE).
+
 ## Share a search
 
 Give the query and the paths you would have opened. If several notes would answer the question, name them and say what each contains. Include the first few paths MindGraph returned in order, or say that it returned no rows. If the search never ran, the command and a short error excerpt are enough.
