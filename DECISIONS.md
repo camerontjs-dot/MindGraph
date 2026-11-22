@@ -4,6 +4,28 @@ Architectural decision records for MindGraph. Each entry records what was decide
 
 ---
 
+## 2026-11-22 — The stdio proxy replaces its daemon session after a restart
+
+**Status:** Accepted for this workbench slice. Not promoted.
+
+**Decision:** `mcp-proxy` keeps its session with the shared daemon in `Upstream`, whose `run()` task opens, holds and replaces it. A request that fails with the SDK's `Session terminated` error, or that is still waiting when its session ends, gets one new session and one more attempt. Every other error reaches the client unchanged, and no request is retried twice. When the daemon cannot be reached, that request fails at once with `UpstreamUnavailable` and the next request tries again. Startup still fails when the daemon is unreachable, and `--lease` handling is unchanged.
+
+**Context:** The daemon keeps MCP sessions in memory. After a restart it answers an existing session id with HTTP 404, which the SDK client reports as a JSON-RPC error with the message `Session terminated`. The proxy opened one session at startup and forwarded every call through it.
+
+**Observed evidence:** Against the previous proxy, both end-to-end tests in `tests/test_mcp_proxy_restart.py` fail. After a daemon restart every call returns `Session terminated`. A call made while the daemon is down raises `httpx.ConnectError` inside the SDK transport's task group, which ends the proxy process (`MCP proxy failed: unhandled errors in a TaskGroup (1 sub-exception)`), and the client's call never returns. On a real install, one daemon restart left one connected proxy returning `Session terminated` on every call and another proxy gone. The second fits the downtime failure, but its cause was not captured.
+
+**Inference:** The SDK transport holds an anyio task group for the life of a session, so one task has to open and close it. Request handlers run in their own tasks and cannot safely reconnect for themselves. A request already waiting on a session whose transport failed never gets an answer, so the owning task cancels the requests still in flight when their session ends.
+
+**Alternatives:** Restarting the proxy from the client, which is what users had to do. Retrying every error, or retrying until a call succeeds, which would hide real tool errors and could loop. Reconnecting inside the request handler, which breaks the same-task rule above. A request timeout, which would change behaviour for slow queries and still leave the stale session in place. I kept the trigger narrow: only the SDK's session-gone error and a session that ends mid-request cause a retry.
+
+**Consequence:** A running proxy keeps working across daemon restarts. A request made while the daemon is down fails at once instead of waiting forever. The client's cached tool list is not refreshed, so an option added by a newer daemon appears only after the client lists tools again.
+
+**Residual uncertainty:** Detection keys on the SDK's message text. An SDK release that reports an unknown session differently would strand proxies again, with an error on every call rather than a hang. The `--lease` path was not exercised across a restart.
+
+**Reconsideration trigger:** An MCP SDK release that changes how an unknown session is reported, or a client that needs the proxy to refresh its tool list after reconnecting.
+
+---
+
 ## 2026-09-23 — Opt-in bounded graph admission
 
 **Status:** Accepted for this workbench slice. Not promoted.
